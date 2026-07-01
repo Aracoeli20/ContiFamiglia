@@ -8,12 +8,13 @@
 // ============================================================
 
 export const firebaseConfig = {
-  apiKey: "INCOLLA_QUI",
-  authDomain: "INCOLLA_QUI",
-  projectId: "INCOLLA_QUI",
-  storageBucket: "INCOLLA_QUI",
-  messagingSenderId: "INCOLLA_QUI",
-  appId: "INCOLLA_QUI"
+  apiKey: "AIzaSyCxqsYhfYeKbMWBmLBQ3ECBgZNJIFp_wyg",
+  authDomain: "http://conti-di-famiglia.firebaseapp.com",
+  databaseURL: "https://conti-di-famiglia-default-rtdb.europe-west1.firebasedatabase.app",
+  projectId: "conti-di-famiglia",
+  storageBucket: "http://conti-di-famiglia.firebasestorage.app",
+  messagingSenderId: "457016106642",
+  appId: "1:457016106642:web:9f0d52dbb6918b896e904b"
 };
 
 export const isConfigured =
