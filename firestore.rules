@@ -1,0 +1,36 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ─────────────────────────────────────────────────────────────
+    //  IMPORTANTE · dati finanziari condivisi.
+    //  Le chiavi Firebase sono pubbliche (girano nel browser), quindi
+    //  l'accesso ai dati è protetto SOLO da queste regole. Metti qui
+    //  le email della famiglia: solo loro potranno leggere/scrivere,
+    //  anche se un estraneo riuscisse a registrarsi sul progetto.
+    //
+    //  Sostituisci gli indirizzi qui sotto con quelli VERI, poi
+    //  pubblica (Console Firebase -> Firestore -> Regole -> Pubblica).
+    //  Finche' restano quelli di esempio, nessuno accede e l'app
+    //  risultera' "vuota": e' voluto (meglio bloccato che esposto).
+    // ─────────────────────────────────────────────────────────────
+    function isFamiglia() {
+      return request.auth != null && request.auth.token.email in [
+        'domenico@esempio.it',
+        'cristina@esempio.it'
+      ];
+    }
+
+    // Alternativa SCONSIGLIATA (chiunque sia autenticato puo' accedere):
+    // function isFamiglia() { return request.auth != null; }
+
+    match /transactions/{id} { allow read, write: if isFamiglia(); }
+    match /assets/{id}       { allow read, write: if isFamiglia(); }
+    match /snapshots/{id}    { allow read, write: if isFamiglia(); }
+    match /members/{id}      { allow read, write: if isFamiglia(); }
+    match /config/{id}       { allow read, write: if isFamiglia(); }
+
+    // Tutto il resto e' negato.
+    match /{document=**} { allow read, write: if false; }
+  }
+}
