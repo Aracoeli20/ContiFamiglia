@@ -111,6 +111,7 @@ const P = {
   bell:'<path d="M6 9a6 6 0 0 1 12 0c0 5 2 6 2 6H4s2-1 2-6"/><path d="M10 20a2 2 0 0 0 4 0"/>',
   percent:'<circle cx="7.5" cy="7.5" r="2.5"/><circle cx="16.5" cy="16.5" r="2.5"/><path d="M19 5L5 19"/>',
   card:'<rect x="3" y="6" width="18" height="12" rx="2"/><path d="M3 10h18"/>',
+  upload:'<path d="M12 3v13"/><path d="M7 8l5-5 5 5"/><path d="M5 21h14"/>',
   layers:'<path d="M12 3l9 5-9 5-9-5z"/><path d="M3 13l9 5 9-5"/>'
 };
 const svg = (k,cls='ic') => `<svg viewBox="0 0 24 24" class="${cls}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${P[k]||''}</svg>`;
@@ -189,14 +190,15 @@ function netWorthParts(){
   const inNW = a => !a.excludeNetWorth;
   const liquidAll = DATA.accounts.reduce((s,a)=>s+(bal[a.id]||0),0);
   const liquid = DATA.accounts.filter(inNW).reduce((s,a)=>s+(bal[a.id]||0),0);
-  const dispo = DATA.accounts.filter(a=>!isCard(a)&&!a.locked).reduce((s,a)=>s+(bal[a.id]||0),0);
-  const vinc  = DATA.accounts.filter(a=>!isCard(a)&&a.locked).reduce((s,a)=>s+(bal[a.id]||0),0);
+  const dispo = DATA.accounts.filter(a=>!isCard(a)&&!a.locked&&inNW(a)).reduce((s,a)=>s+(bal[a.id]||0),0);
+  const vinc  = DATA.accounts.filter(a=>!isCard(a)&&a.locked&&inNW(a)).reduce((s,a)=>s+(bal[a.id]||0),0);
+  const memo  = DATA.accounts.filter(a=>!isCard(a)&&!inNW(a)).reduce((s,a)=>s+(bal[a.id]||0),0); // promemoria, fuori totale
   const cards = DATA.accounts.filter(isCard).reduce((s,a)=>s+(bal[a.id]||0),0); // ≤ 0 di norma
   const otherA = sum(DATA.assets.filter(a=>a.type!=='passivo').map(a=>a.value));
   const passManual = sum(DATA.assets.filter(a=>a.type==='passivo').map(a=>a.value));
   const passRate = sum(rataPassivita().map(x=>x.residuo));
   const pass = Math.round((passManual+passRate)*100)/100;
-  return { bal, liquid, liquidAll, dispo, vinc, cards, otherA, passManual, passRate, pass, netto: Math.round((liquid+otherA-pass)*100)/100 };
+  return { bal, liquid, liquidAll, dispo, vinc, memo, cards, otherA, passManual, passRate, pass, netto: Math.round((liquid+otherA-pass)*100)/100 };
 }
 
 /* ===================== Calcoli previsionale ===================== */
@@ -379,8 +381,8 @@ function viewCruscotto(){
   ${scadCard}
   <button class="btn primary block" data-act="mov-new">${svg('plus')} Aggiungi movimento</button>
   <button class="card liq-card" data-act="goto" data-view="patrimonio">
-    <span><span class="nudge-k">Liquidità totale</span><span class="muted sm"> · ${DATA.accounts.length} conti</span></span>
-    <span class="liq-v">${eur(np.liquidAll)}</span>
+    <span><span class="nudge-k">Liquidità disponibile</span><span class="muted sm"> · ${DATA.accounts.length} conti${np.vinc?` · ${eur(np.vinc)} vincolata`:''}</span></span>
+    <span class="liq-v">${eur(np.dispo)}</span>
   </button>
   <section class="card">
     <div class="card-h"><h3 class="card-title">Ultimi movimenti</h3></div>
@@ -611,7 +613,7 @@ function viewDelta(){
 function cardUsageMonth(id){ return sum(txMonth(curMonth()).filter(t=>t.type==='uscita'&&t.account===id).map(t=>t.amount)); }
 function accRow(a, bal){
   const km=kindMeta(a.kind); const b=bal[a.id]||0; const isCard=a.kind==='carta';
-  const tags = `<span class="kind-tag">${km.label}</span>${a.locked&&!isCard?' · vincolato':''}${a.excludeNetWorth?' · fuori patrimonio':''}${isCard&&a.billingDay?` · addebito il ${a.billingDay}`:''}`;
+  const tags = `<span class="kind-tag">${km.label}</span>${a.locked&&!isCard?' · vincolato':''}${a.excludeNetWorth?' · promemoria':''}${isCard&&a.billingDay?` · addebito il ${a.billingDay}`:''}`;
   const extra = isCard ? `<span class="muted sm"> · utilizzo mese ${eur0(cardUsageMonth(a.id))}</span>` : '';
   return `<button class="row" data-act="acc-open" data-id="${a.id}">
     <span class="row-dot" style="--c:${km.color}"></span>
@@ -621,8 +623,9 @@ function accRow(a, bal){
 }
 function viewPatrimonio(){
   const np = netWorthParts(); const bal=np.bal;
-  const dispoAcc = DATA.accounts.filter(a=>a.kind!=='carta'&&!a.locked);
-  const vincAcc  = DATA.accounts.filter(a=>a.kind!=='carta'&&a.locked);
+  const dispoAcc = DATA.accounts.filter(a=>a.kind!=='carta'&&!a.locked&&!a.excludeNetWorth);
+  const vincAcc  = DATA.accounts.filter(a=>a.kind!=='carta'&&a.locked&&!a.excludeNetWorth);
+  const memoAcc  = DATA.accounts.filter(a=>a.kind!=='carta'&&a.excludeNetWorth);
   const cardAcc  = DATA.accounts.filter(a=>a.kind==='carta');
   const accSub = (title,arr,tot,cls) => arr.length ? `
     <div class="card-h" style="margin:12px 0 6px"><h4 class="card-title" style="font-size:1.02rem">${title}</h4><b class="${cls||''}">${eur(tot)}</b></div>
@@ -655,11 +658,15 @@ function viewPatrimonio(){
   </section>
 
   <section class="card">
-    <div class="card-h"><h3 class="card-title">Conti · Liquidità</h3><b>${eur(np.liquidAll)}</b></div>
+    <div class="card-h"><h3 class="card-title">Conti · Liquidità</h3><b>${eur(np.liquid)}</b></div>
     ${noAcc}
     ${accSub('Disponibile', dispoAcc, dispoAcc.reduce((s,a)=>s+(bal[a.id]||0),0))}
     ${accSub('Vincolata', vincAcc, np.vinc)}
     ${accSub('Carte di credito', cardAcc, cardTot, cardTot<0?'neg':'')}
+    ${memoAcc.length ? `
+    <div class="card-h" style="margin:12px 0 6px"><h4 class="card-title" style="font-size:1.02rem">Promemoria · fuori totale</h4><b class="muted">${eur(np.memo)}</b></div>
+    <div class="list">${memoAcc.map(a=>accRow(a,bal)).join('')}</div>
+    <p class="hint" style="margin-top:6px">Non conteggiati in liquidità né nel patrimonio: soldi già presenti in un altro conto (es. la quota di Samuele investita nel conto investimento).</p>` : ''}
     <button class="btn ghost block" data-act="acc-new" style="margin-top:12px">${svg('plus')} Aggiungi conto o carta</button>
   </section>
 
@@ -725,6 +732,8 @@ function viewImpostazioni(){
   <section class="card">
     <div class="card-h"><h3 class="card-title">Dati</h3></div>
     <button class="btn ghost block" data-act="export">${svg('download')} Esporta tutto (JSON)</button>
+    <button class="btn ghost block" data-act="import" style="margin-top:8px">${svg('upload')} Importa / Ripristina (JSON)</button>
+    <p class="hint" style="margin-top:8px">L'importazione aggiunge i dati del file a quelli presenti; gli elementi con lo stesso identificativo vengono aggiornati, non duplicati. Utile per recuperare i dati da una vecchia installazione: esporta là, importa qui.</p>
     ${!standalone ? (iOS
       ? `<p class="hint">Per installare l'app: tocca <b>Condividi</b> e poi <b>Aggiungi a Home</b>.</p>`
       : (deferredPrompt?`<button class="btn ghost block" data-act="install" style="margin-top:8px">${svg('download')} Installa app</button>`:'')) : ''}
@@ -1064,7 +1073,7 @@ function renderAccountSheet(d){
       ${cardBlock}
       ${lockBlock}
       ${taxBlock}
-      <label class="check"><input type="checkbox" id="ae-exclude" ${d.exclude?'checked':''}><span>Escludi dal patrimonio netto</span></label>
+      <label class="check"><input type="checkbox" id="ae-exclude" ${d.exclude?'checked':''}><span>Promemoria: escludi da liquidità e patrimonio (soldi già contati in un altro conto)</span></label>
       <label class="field"><span>Nota (facoltativa)</span><input id="ae-note" placeholder="Dettaglio" value="${escapeHtml(d.note||'')}"></label>
       <div class="sheet-error" id="ae-err"></div>
       <div class="sheet-actions">
@@ -1334,6 +1343,44 @@ async function saveSnapshot(){
   try{ if(existing) await store.update('snapshots', existing.id, rec); else await store.add('snapshots', rec); toast('Fotografia del patrimonio salvata'); }
   catch(e){ console.warn(e); toast('Errore nel salvataggio'); }
 }
+function openImport(){
+  let inp=el('import-file');
+  if(!inp){
+    inp=document.createElement('input'); inp.type='file'; inp.accept='application/json,.json'; inp.id='import-file'; inp.style.display='none';
+    document.body.appendChild(inp); inp.addEventListener('change', handleImportFile);
+  }
+  inp.value=''; inp.click();
+}
+async function handleImportFile(e){
+  const file=e.target.files&&e.target.files[0]; if(!file) return;
+  let data;
+  try{ data=JSON.parse(await file.text()); }
+  catch(err){ toast('File non leggibile o non in formato JSON'); return; }
+  if(!data || typeof data!=='object'){ toast('File non valido'); return; }
+  if(data.app!=='conti-famiglia'){ if(!confirm('Il file non sembra un backup di Conti di Famiglia. Importarlo comunque?')) return; }
+  const cols=['members','accounts','transactions','assets','snapshots','forecast'];
+  const total=cols.reduce((s,c)=>s+(Array.isArray(data[c])?data[c].length:0),0);
+  if(!total && !data.categories){ toast('Nel file non ci sono dati da importare'); return; }
+  if(!confirm(`Importare ${total} elementi nel database attuale?\nVengono aggiunti a quelli presenti; gli stessi identificativi vengono aggiornati, non duplicati.`)) return;
+  toast('Importazione in corso…');
+  const counts={};
+  try{
+    for(const c of cols){
+      if(!Array.isArray(data[c])) continue;
+      for(const rec of data[c]){
+        if(!rec || typeof rec!=='object') continue;
+        const { id, ...rest }=rec;
+        if(id!=null && store.set) await store.set(c, id, rest);
+        else await store.add(c, rest);
+        counts[c]=(counts[c]||0)+1;
+      }
+    }
+    if(data.categories && store.saveCategories) await store.saveCategories(data.categories);
+    if(modalOpen) closeSheet();
+    const summary=Object.entries(counts).map(([k,v])=>`${v} ${k}`).join(', ');
+    toast(summary?`Importati: ${summary}`:'Categorie importate');
+  }catch(err){ console.warn('import',err); toast('Errore durante l\u2019importazione. Riprova.'); }
+}
 function exportJSON(){
   const data={ app:'conti-famiglia', version:3, exportedAt:new Date().toISOString(), members:DATA.members, accounts:DATA.accounts, transactions:DATA.transactions, assets:DATA.assets, snapshots:DATA.snapshots, forecast:DATA.forecast, categories:DATA.categories };
   const blob=new Blob([JSON.stringify(data,null,2)],{ type:'application/json' });
@@ -1433,6 +1480,7 @@ function onClick(e){
     case 'sheet-close': closeSheet(); break;
     case 'logout': if(modalOpen) closeSheet(); store.logout(); break;
     case 'export': exportJSON(); break;
+    case 'import': openImport(); break;
     case 'install': doInstall(); break;
     case 'cat-add': catAdd(ds.group); break;
     case 'cat-del': catDel(ds.group, ds.name); break;
