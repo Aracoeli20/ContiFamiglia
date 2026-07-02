@@ -350,3 +350,12 @@ code{font-family:ui-monospace,Menlo,monospace;font-size:.85em;background:var(--s
 .chart-legend{display:flex;justify-content:center;gap:18px;margin-top:4px;font-size:.78rem;color:var(--muted)}
 .chart-legend span{display:inline-flex;align-items:center;gap:6px}
 .lg-dot{width:10px;height:10px;border-radius:3px;display:inline-block}
+
+/* ---------- v3.1 · Entrate nel previsionale ---------- */
+.fc-grp.fc-inc td{background:#E8EFEC}
+.fc-grp.fc-inc .fc-grp-name{color:var(--acqua)}
+.fc-table td.fc-name.fc-grp-name{white-space:nowrap}
+.fc-foot.fc-saldo td{border-top:1px dashed var(--line-2)}
+.fc-foot.fc-saldo .pos{color:var(--acqua)}
+.fc-foot.fc-saldo .neg{color:var(--terra)}
+.member .btn.sm{flex:0 0 auto;padding:6px 9px}

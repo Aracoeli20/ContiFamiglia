@@ -26,10 +26,12 @@ function makeLocalStore(){
       create(name){
         const m={ uid:rid(), name:(name||'Utente').trim()||'Utente', color:colorFor((name||'')+rid()) };
         const ms=read('members',[]); ms.push(m); write('members',ms); emit('members'); setCur(m); return m;
-      }
+      },
+      removeMember(uid){ write('members', read('members',[]).filter(m=>m.uid!==uid)); emit('members'); }
     },
     subscribe(c,cb){ (subs[c]=subs[c]||[]).push(cb); cb(sortC(c, read(c,[]))); return ()=>{ subs[c]=(subs[c]||[]).filter(f=>f!==cb); }; },
     async add(c,data){ const id=rid(); const a=read(c,[]); a.push({ id, createdAt:Date.now(), ...data }); write(c,a); emit(c); return id; },
+    async set(c,id,data){ const a=read(c,[]); const i=a.findIndex(x=>x.id===id); if(i>=0) a[i]={ ...a[i], ...data, id }; else a.push({ id, ...data }); write(c,a); emit(c); return id; },
     async update(c,id,data){ write(c, read(c,[]).map(x=>x.id===id?{...x,...data}:x)); emit(c); },
     async remove(c,id){ write(c, read(c,[]).filter(x=>x.id!==id)); emit(c); },
     async adjustAccount(id,delta){ write('accounts', read('accounts',[]).map(x=>x.id===id?{...x,balance:(+x.balance||0)+delta}:x)); emit('accounts'); },
@@ -90,6 +92,7 @@ async function makeFirebaseStore(){
       return onSnapshot(ref, s=>cb(s.docs.map(d=>({ id:d.id, ...d.data() }))), e=>{ console.warn('subscribe',c,e&&e.code); cb([]); });
     },
     async add(c,data){ const r=await addDoc(collection(db,c), { ...data, createdAt:serverTimestamp() }); return r.id; },
+    async set(c,id,data){ await setDoc(doc(db,c,String(id)), data); return id; },
     async update(c,id,data){ await updateDoc(doc(db,c,id), data); },
     async remove(c,id){ await deleteDoc(doc(db,c,id)); },
     async adjustAccount(id,delta){ try{ await updateDoc(doc(db,'accounts',id), { balance: increment(delta) }); }catch(e){ console.warn('adjustAccount',e&&e.code); } },

@@ -24,6 +24,7 @@ const KINDS = {
   buoni:       { label:'Buoni pasto',    color:'#C2A36A' },
   pensione:    { label:'Pensione',       color:'#5A6473' },
   risparmio:   { label:'Risparmio',      color:'#5C8C82' },
+  credito:     { label:'Credito da ricevere', color:'#927A45' },
   carta:       { label:'Carta di credito', color:'#A6533F' },
   altro:       { label:'Altro',          color:'#8A8275' }
 };
@@ -82,7 +83,9 @@ const accountById = id => DATA.accounts.find(a=>a.id===id);
 const txMonth = ym => DATA.transactions.filter(t=>(t.date||'').slice(0,7)===ym);
 const signed = n => (n<0?'−':'') + eur(Math.abs(n));
 const isPL = t => (t.type==='uscita' || t.type==='entrata');
-const countsIncome = t => t.type==='entrata' && !t.excludeFromTotals;
+const isMemoAcc = id => { const a=accountById(id); return !!(a && a.excludeNetWorth); };
+const countsIncome = t => t.type==='entrata' && !t.excludeFromTotals && !isMemoAcc(t.account);
+const countsExpense = t => t.type==='uscita' && !isMemoAcc(t.account);
 const isFuelSub = name => !!name && /benzin|carburant|riforniment|gasolio|diesel|metano|\bgpl\b/i.test(name);
 function vehicleList(){ const used=[...new Set(DATA.transactions.map(t=>t.vehicle).filter(Boolean))]; return [...new Set([...used,'Auto','Moto','Furgone','Scooter'])]; }
 
@@ -268,7 +271,9 @@ async function materializeMonth(y,mi){
     const amt=Math.round(fcMonthly(it,y,mi)*100)/100; if(amt<=0) continue;
     const key=`${it.id}:${ym}`;
     if(DATA.transactions.some(t=>t.planKey===key)){ skipped++; continue; }
-    if((it.kind||'ricorrente')==='accantonamento'){
+    if(it.flow==='entrata'){
+      await store.add('transactions',{ type:'entrata', amount:amt, date:`${ym}-01`, macro:null, sub:it.sub||it.name, account:it.account||'', paidBy:me.uid, enteredBy:me.uid, note:'Entrata prevista (previsionale)', fixed:true, origin:'previsionale', planKey:key });
+    } else if((it.kind||'ricorrente')==='accantonamento'){
       const from=it.account||'', to=it.fundAccount||'';
       if(!from||!to){ problems++; continue; }
       await store.add('transactions',{ type:'giroconto', amount:amt, date:`${ym}-01`, fromAccount:from, toAccount:to, note:`Accantonamento · ${it.name}`, enteredBy:me.uid, origin:'previsionale', fixed:true, planKey:key });
@@ -344,10 +349,10 @@ const emptyState = msg => `<div class="empty">${escapeHtml(msg)}</div>`;
 function viewCruscotto(){
   const list = txMonth(fMonth);
   const ent = sum(list.filter(countsIncome).map(t=>t.amount));
-  const usc = sum(list.filter(t=>t.type==='uscita').map(t=>t.amount));
+  const usc = sum(list.filter(countsExpense).map(t=>t.amount));
   const delta = ent - usc;
   const per = { incomprimibili:0, oggettive:0, superflue:0 };
-  list.filter(t=>t.type==='uscita').forEach(t=>{ per[t.macro] = (per[t.macro]||0) + (+t.amount||0); });
+  list.filter(countsExpense).forEach(t=>{ per[t.macro] = (per[t.macro]||0) + (+t.amount||0); });
   const recent = DATA.transactions.slice(0,6);
   const np = netWorthParts();
   const cs = carryStatus(fMonth);
@@ -359,7 +364,7 @@ function viewCruscotto(){
     </section>` : '';
   const fixedCard = cs.plannedCount>0 ? `
     <section class="card nudge">
-      <div class="nudge-row"><div><div class="nudge-k">Spese fisse di ${monthName(fMonth).split(' ')[0].toLowerCase()}</div>
+      <div class="nudge-row"><div><div class="nudge-k">Voci fisse di ${monthName(fMonth).split(' ')[0].toLowerCase()}</div>
         <div class="nudge-v">${eur(cs.plannedTot)} <span class="muted sm">previste</span></div></div>
         ${cs.todo>0 ? `<button class="btn primary sm" data-act="fixed-carry" data-year="${cs.year}" data-mi="${cs.mi}">${svg('download')} Porta nel rendiconto</button>` : `<span class="done-tag">${svg('check','ic-xs')} riportate</span>`}
       </div>
@@ -452,7 +457,7 @@ function viewMovimenti(){
   if(fAccount!=='all') list = list.filter(t=> t.account===fAccount || t.fromAccount===fAccount || t.toAccount===fAccount);
   if(fPerson!=='all') list = list.filter(t=> t.paidBy===fPerson && isPL(t));
   const ent = sum(list.filter(countsIncome).map(t=>t.amount));
-  const usc = sum(list.filter(t=>t.type==='uscita').map(t=>t.amount));
+  const usc = sum(list.filter(countsExpense).map(t=>t.amount));
   const byDay={};
   list.forEach(t=>{ (byDay[t.date]=byDay[t.date]||[]).push(t); });
   const days = Object.keys(byDay).sort((a,b)=>b.localeCompare(a));
@@ -481,7 +486,7 @@ function scadenzaRow(d){
   const right = d.kind==='carta'
     ? `<button class="btn ghost sm" data-act="card-settle" data-id="${d.account.id}">${svg('scale','ic-xs')} Salda</button>`
     : `<button class="btn ghost sm" data-act="fc-renew" data-id="${d.id}">Rinnova ${(+ (d.dateISO.slice(0,4)))+1}</button>`;
-  const km = d.kind==='accantonamento' ? 'Accantonamento' : (d.kind==='carta' ? 'Carta' : 'Scadenza');
+  const km = (d.item&&d.item.flow==='entrata') ? 'Entrata attesa' : (d.kind==='accantonamento' ? 'Accantonamento' : (d.kind==='carta' ? 'Carta' : 'Scadenza'));
   return `<div class="scad-row${urgent?' urgent':''}">
     <span class="scad-ic">${svg(d.kind==='carta'?'card':'bell','ic-xs')}</span>
     <span class="row-main"><span class="row-cat">${escapeHtml(d.name)}</span><span class="row-meta">${km} · ${dueLabel(d.days)} · ${dayShort(d.dateISO)}</span></span>
@@ -489,31 +494,51 @@ function scadenzaRow(d){
   </div>`;
 }
 function viewPrevisionale(){
-  const items = fcItemsForYear(fYear);
-  const groups = fcGrouped(items);
+  const all = fcItemsForYear(fYear);
+  const incItems = all.filter(i=>i.flow==='entrata');
+  const expItems = all.filter(i=>i.flow!=='entrata');
   const head = MESI_AB.map(m=>`<th>${m}</th>`).join('');
-  let body='';
-  groups.forEach(g=>{
-    if(g.group){
-      const gc = MESI_AB.map((_,i)=>{ const v=fcMonthTotal(g.items,fYear,i); return `<td class="fc-cell fc-sub">${v>0?eur0(v):'·'}</td>`; }).join('');
-      const gtot = Math.round(sum(g.items.map(it=>fcItemAnnual(it,fYear)))*100)/100;
-      body += `<tr class="fc-grp"><td class="fc-name fc-grp-name">${svg('layers','ic-xs')} ${escapeHtml(g.group)}</td>${gc}<td class="fc-cell fc-total">${eur0(gtot)}</td></tr>`;
-    }
-    g.items.forEach(it=>{
-      const km=fcKindMeta(it.kind);
-      const cells = MESI_AB.map((_,i)=>{ const v=fcMonthly(it,fYear,i); return `<td class="fc-cell${v>0?'':' zero'}">${v>0?eur0(v):'·'}</td>`; }).join('');
-      const tag = (it.kind&&it.kind!=='ricorrente') ? `<span class="fc-ktag">${km.label.split(' ')[0]}</span>` : '';
-      body += `<tr class="fc-row${g.group?' fc-child':''}"><td class="fc-name"><button class="fc-name-btn" data-act="fc-edit" data-id="${it.id}"><span class="tier-dot" style="--c:${macro(it.macro).color}"></span><span class="fc-nm">${escapeHtml(it.name)}</span>${tag}</button></td>${cells}<td class="fc-cell fc-total">${eur0(fcItemAnnual(it,fYear))}</td></tr>`;
+  const itemRow = (it, child) => {
+    const km=fcKindMeta(it.kind);
+    const cells = MESI_AB.map((_,i)=>{ const v=fcMonthly(it,fYear,i); return `<td class="fc-cell${v>0?'':' zero'}">${v>0?eur0(v):'·'}</td>`; }).join('');
+    const tag = (it.kind&&it.kind!=='ricorrente') ? `<span class="fc-ktag">${km.label.split(' ')[0]}</span>` : '';
+    const dot = it.flow==='entrata' ? '#3E6B63' : macro(it.macro).color;
+    return `<tr class="fc-row${child?' fc-child':''}"><td class="fc-name"><button class="fc-name-btn" data-act="fc-edit" data-id="${it.id}"><span class="tier-dot" style="--c:${dot}"></span><span class="fc-nm">${escapeHtml(it.name)}</span>${tag}</button></td>${cells}<td class="fc-cell fc-total">${eur0(fcItemAnnual(it,fYear))}</td></tr>`;
+  };
+  const groupRows = (items, childAll) => {
+    let out='';
+    fcGrouped(items).forEach(g=>{
+      if(g.group){
+        const gc = MESI_AB.map((_,i)=>{ const v=fcMonthTotal(g.items,fYear,i); return `<td class="fc-cell fc-sub">${v>0?eur0(v):'·'}</td>`; }).join('');
+        const gtot = Math.round(sum(g.items.map(it=>fcItemAnnual(it,fYear)))*100)/100;
+        out += `<tr class="fc-grp"><td class="fc-name fc-grp-name">${svg('layers','ic-xs')} ${escapeHtml(g.group)}</td>${gc}<td class="fc-cell fc-total">${eur0(gtot)}</td></tr>`;
+      }
+      g.items.forEach(it=>{ out += itemRow(it, childAll||!!g.group); });
     });
-  });
-  const monthTotals = MESI_AB.map((_,i)=>`<td>${eur0(fcMonthTotal(items,fYear,i))}</td>`).join('');
-  const grand = Math.round(sum(items.map(it=>fcItemAnnual(it,fYear)))*100)/100;
-  const table = items.length ? `
+    return out;
+  };
+  let body='';
+  if(incItems.length){
+    const ic = MESI_AB.map((_,i)=>{ const v=fcMonthTotal(incItems,fYear,i); return `<td class="fc-cell fc-sub">${v>0?eur0(v):'·'}</td>`; }).join('');
+    const itot = Math.round(sum(incItems.map(it=>fcItemAnnual(it,fYear)))*100)/100;
+    body += `<tr class="fc-grp fc-inc"><td class="fc-name fc-grp-name">${svg('plusc','ic-xs')} Entrate</td>${ic}<td class="fc-cell fc-total">${eur0(itot)}</td></tr>`;
+    body += groupRows(incItems, true);
+  }
+  body += groupRows(expItems, false);
+  const expTotals = MESI_AB.map((_,i)=>`<td>${eur0(fcMonthTotal(expItems,fYear,i))}</td>`).join('');
+  const grandExp = Math.round(sum(expItems.map(it=>fcItemAnnual(it,fYear)))*100)/100;
+  const grandInc = Math.round(sum(incItems.map(it=>fcItemAnnual(it,fYear)))*100)/100;
+  const saldoRow = incItems.length ? (()=>{
+    const cells = MESI_AB.map((_,i)=>{ const v=Math.round((fcMonthTotal(incItems,fYear,i)-fcMonthTotal(expItems,fYear,i))*100)/100; return `<td><span class="${v>=0?'pos':'neg'}">${eur0(v)}</span></td>`; }).join('');
+    const y=Math.round((grandInc-grandExp)*100)/100;
+    return `<tr class="fc-foot fc-saldo"><td class="fc-name">Saldo previsto</td>${cells}<td><span class="${y>=0?'pos':'neg'}">${eur0(y)}</span></td></tr>`;
+  })() : '';
+  const table = all.length ? `
     <div class="fc-wrap"><table class="fc-table">
       <thead><tr><th class="fc-name">Voce</th>${head}<th>Anno</th></tr></thead>
       <tbody>${body}</tbody>
-      <tfoot><tr class="fc-foot"><td class="fc-name">Totale</td>${monthTotals}<td>${eur0(grand)}</td></tr></tfoot>
-    </table></div>` : emptyState('Nessuna voce. Aggiungi le spese ricorrenti, le rate, gli accantonamenti.');
+      <tfoot><tr class="fc-foot"><td class="fc-name">${incItems.length?'Uscite':'Totale'}</td>${expTotals}<td>${eur0(grandExp)}</td></tr>${saldoRow}</tfoot>
+    </table></div>` : emptyState('Nessuna voce. Aggiungi entrate previste, spese ricorrenti, rate, accantonamenti.');
   const monthOpts = MESI.map((m,i)=>`<option value="${i}" ${i===(new Date().getMonth())?'selected':''}>${m}</option>`).join('');
   const scad = upcomingDeadlines(75);
   const scadCard = scad.length ? `
@@ -521,18 +546,19 @@ function viewPrevisionale(){
     <div class="card-h"><h3 class="card-title">${svg('bell','ic-xs')} In scadenza</h3><span class="muted sm">prossimi 75 giorni</span></div>
     <div class="scad-list">${scad.map(scadenzaRow).join('')}</div>
   </section>` : '';
+  const headRight = incItems.length ? `saldo ${eur0(Math.round((grandInc-grandExp)*100)/100)}/anno` : `${eur0(grandExp)}/anno`;
   return `
   ${yearNav()}
   ${scadCard}
   <button class="btn primary block" data-act="fc-new">${svg('plus')} Aggiungi voce</button>
   <section class="card">
-    <div class="card-h"><h3 class="card-title">Piano ${fYear}</h3><span class="muted sm">${eur0(grand)}/anno</span></div>
+    <div class="card-h"><h3 class="card-title">Piano ${fYear}</h3><span class="muted sm">${headRight}</span></div>
     ${table}
     <p class="hint">Tocca una voce per modificarla. Le rate scorrono da sole oltre fine anno; gli accantonamenti si ripartiscono fino alla scadenza.</p>
   </section>
   <section class="card">
     <div class="card-h"><h3 class="card-title">Porta nel rendiconto</h3></div>
-    <p class="hint" style="margin-top:0">Crea nel registro le spese fisse del mese scelto (una sola volta). Gli accantonamenti diventano giroconti sul conto dedicato.</p>
+    <p class="hint" style="margin-top:0">Crea nel registro le voci fisse del mese scelto (una sola volta): uscite, entrate previste e accantonamenti (giroconti sul conto dedicato).</p>
     <div class="carry">
       <label class="field grow"><span>Mese</span><select id="carry-month">${monthOpts}</select></label>
       <button class="btn primary" data-act="fc-carry-pick" data-year="${fYear}">${svg('download')} Porta</button>
@@ -584,16 +610,16 @@ function groupedBars(series){
 function viewDelta(){
   const list = txMonth(fMonth);
   const ent = sum(list.filter(countsIncome).map(t=>t.amount));
-  const usc = sum(list.filter(t=>t.type==='uscita').map(t=>t.amount));
+  const usc = sum(list.filter(countsExpense).map(t=>t.amount));
   const delta = ent - usc;
   const per={}; MACROS.forEach(m=>per[m.key]=0);
-  list.filter(t=>t.type==='uscita').forEach(t=>{ per[t.macro]=(per[t.macro]||0)+(+t.amount||0); });
+  list.filter(countsExpense).forEach(t=>{ per[t.macro]=(per[t.macro]||0)+(+t.amount||0); });
   const macroBars = MACROS.map(m=>({ label:`${m.label}${usc>0?' · '+Math.round(per[m.key]/usc*100)+'%':''}`, value:per[m.key], color:m.color }));
-  const pp={}; list.filter(t=>t.type==='uscita').forEach(t=>{ pp[t.paidBy]=(pp[t.paidBy]||0)+(+t.amount||0); });
+  const pp={}; list.filter(countsExpense).forEach(t=>{ pp[t.paidBy]=(pp[t.paidBy]||0)+(+t.amount||0); });
   const personBars = Object.keys(pp).map(uid=>{ const mm=memberById(uid); return { label:mm?firstName(mm.name):'—', value:pp[uid], color:mm?mm.color:'#999' }; }).sort((a,b)=>b.value-a.value);
   const months=[]; for(let i=7;i>=0;i--) months.push(shiftMonth(curMonth(),-i));
-  const series = months.map(ym=>{ const l=txMonth(ym); const e=sum(l.filter(countsIncome).map(t=>t.amount)); const u=sum(l.filter(t=>t.type==='uscita').map(t=>t.amount)); return { label:monthAbbr(ym), value:e-u }; });
-  const euSeries = months.map(ym=>{ const l=txMonth(ym); return { label:monthAbbr(ym), entrate:sum(l.filter(countsIncome).map(t=>t.amount)), uscite:sum(l.filter(t=>t.type==='uscita').map(t=>t.amount)) }; });
+  const series = months.map(ym=>{ const l=txMonth(ym); const e=sum(l.filter(countsIncome).map(t=>t.amount)); const u=sum(l.filter(countsExpense).map(t=>t.amount)); return { label:monthAbbr(ym), value:e-u }; });
+  const euSeries = months.map(ym=>{ const l=txMonth(ym); return { label:monthAbbr(ym), entrate:sum(l.filter(countsIncome).map(t=>t.amount)), uscite:sum(l.filter(countsExpense).map(t=>t.amount)) }; });
   const hasEU = euSeries.some(s=>s.entrate>0||s.uscite>0);
   return `
   ${monthNav()}
@@ -717,10 +743,11 @@ function viewImpostazioni(){
 
   <section class="card">
     <div class="card-h"><h3 class="card-title">Famiglia</h3></div>
-    <div class="list-plain">${DATA.members.map(m=>`<div class="member"><span class="dot" style="--c:${m.color}"></span><div class="grow"><div class="m-name">${escapeHtml(m.name)}</div>${m.email?`<div class="muted sm">${escapeHtml(m.email)}</div>`:''}</div></div>`).join('') || '<div class="muted">Nessun membro.</div>'}</div>
+    <div class="list-plain">${DATA.members.map(m=>`<div class="member"><span class="dot" style="--c:${m.color}"></span><div class="grow"><div class="m-name">${escapeHtml(m.name)}${m.uid===me.uid?' <span class="muted sm">(tu)</span>':''}</div>${m.email?`<div class="muted sm">${escapeHtml(m.email)}</div>`:''}</div>${m.uid!==me.uid?`<button class="btn ghost sm" data-act="member-del" data-id="${m.id||m.uid}" data-uid="${m.uid}" aria-label="Rimuovi ${escapeHtml(m.name)}">${svg('trash')}</button>`:''}</div>`).join('') || '<div class="muted">Nessun membro.</div>'}</div>
     ${isLocal
       ? `<div class="cat-add" style="margin-top:8px"><input id="newprofile" placeholder="Nome nuovo profilo" maxlength="24"><button class="btn ghost sm" data-act="local-create">${svg('plus')} Aggiungi</button></div>`
-      : `<p class="hint">Ogni familiare crea il proprio accesso (email + password) dalla schermata di login.</p>`}
+      : `<div class="cat-add" style="margin-top:8px"><input id="newmember" placeholder="Nome nuovo membro (es. Samuele)" maxlength="24"><button class="btn ghost sm" data-act="member-add">${svg('plus')} Aggiungi</button></div>
+         <p class="hint">I membri aggiunti qui compaiono in "chi ha speso" senza bisogno di un accesso. Chi invece deve entrare nell'app crea il proprio accesso (email + password) dal login.</p>`}
   </section>
 
   <section class="card">
@@ -733,6 +760,7 @@ function viewImpostazioni(){
     <div class="card-h"><h3 class="card-title">Dati</h3></div>
     <button class="btn ghost block" data-act="export">${svg('download')} Esporta tutto (JSON)</button>
     <button class="btn ghost block" data-act="import" style="margin-top:8px">${svg('upload')} Importa / Ripristina (JSON)</button>
+    <button class="btn ghost block" data-act="dedup" style="margin-top:8px">${svg('check')} Rimuovi duplicati (ripara import)</button>
     <p class="hint" style="margin-top:8px">L'importazione aggiunge i dati del file a quelli presenti; gli elementi con lo stesso identificativo vengono aggiornati, non duplicati. Utile per recuperare i dati da una vecchia installazione: esporta là, importa qui.</p>
     ${!standalone ? (iOS
       ? `<p class="hint">Per installare l'app: tocca <b>Condividi</b> e poi <b>Aggiungi a Home</b>.</p>`
@@ -1165,13 +1193,13 @@ function openFcItem(it){
   fcEditId = it?it.id:null;
   const now=new Date(), Y=curYear(), M=now.getMonth();
   const d = it ? {
-    kind:it.kind||'ricorrente', name:it.name||'', group:it.group||'', macro:it.macro||'incomprimibili', sub:it.sub||'', account:it.account||'',
+    kind:it.kind||'ricorrente', flow:it.flow==='entrata'?'entrata':'uscita', name:it.name||'', group:it.group||'', macro:it.macro||'incomprimibili', sub:(it.flow==='entrata'?'':(it.sub||'')), cat:(it.flow==='entrata'?(it.sub||''):''), account:it.account||'',
     amounts:(it.amounts||Array(12).fill(0)).slice(0,12),
     rataAmount:it.rataAmount, nRate:it.nRate, startYear:it.startYear!=null?it.startYear:Y, startMonth:it.startMonth!=null?it.startMonth:M, linkPass:it.linkPass!==false,
     target:it.target, dueYear:it.dueYear!=null?it.dueYear:Y, dueMonth:it.dueMonth!=null?it.dueMonth:M, dueDay:it.dueDay||'', accStartYear:it.accStartYear!=null?it.accStartYear:Y, accStartMonth:it.accStartMonth!=null?it.accStartMonth:M, fundAccount:it.fundAccount||'',
     amount:it.amount
   } : {
-    kind:'ricorrente', name:'', group:'', macro:'incomprimibili', sub:'', account:'',
+    kind:'ricorrente', flow:'uscita', name:'', group:'', macro:'incomprimibili', sub:'', cat:'', account:'',
     amounts:Array(12).fill(0),
     rataAmount:'', nRate:'', startYear:Y, startMonth:M, linkPass:true,
     target:'', dueYear:Y, dueMonth:M, dueDay:'', accStartYear:Y, accStartMonth:M, fundAccount:'',
@@ -1232,18 +1260,31 @@ function renderFcSheet(d){
       <label class="field"><span>Giorno (opzionale)</span><input id="fc-dueday" inputmode="numeric" value="${d.dueDay||''}" placeholder="—"></label>
       <p class="hint">Comparirà in "In scadenza". Rinnovabile all'anno successivo.</p>`;
   }
-  const acctLabel = d.kind==='accantonamento' ? 'Conto di origine' : (d.kind==='rata' ? 'Conto di addebito rata' : (d.kind==='scadenza' ? 'Conto di pagamento' : 'Conto predefinito'));
+  const isInc = d.flow==='entrata';
+  if(isInc && (d.kind==='rata'||d.kind==='accantonamento')) d.kind='ricorrente';
+  const kindKeys = isInc ? ['ricorrente','scadenza'] : Object.keys(FC_KINDS);
+  const hintText = isInc
+    ? (d.kind==='scadenza' ? 'Entrata attesa in un\u2019unica soluzione a una data, con avviso.' : 'Importo fisso su uno o più mesi (stipendio, affitto, pensione…).')
+    : fcKindMeta(d.kind).hint;
+  const catRow = isInc
+    ? `<label class="field"><span>Categoria</span><select id="fc-cat">${srcOptions(d.cat)}</select></label>`
+    : `<label class="field"><span>Fascia</span><select id="fc-macro">${MACROS.map(m=>`<option value="${m.key}" ${m.key===d.macro?'selected':''}>${m.label}</option>`).join('')}</select></label>`;
+  const acctLabel = isInc ? 'Conto di accredito' : (d.kind==='accantonamento' ? 'Conto di origine' : (d.kind==='rata' ? 'Conto di addebito rata' : (d.kind==='scadenza' ? 'Conto di pagamento' : 'Conto predefinito')));
   openSheet(`
     <div class="sheet-h"><h3 class="sheet-title">${fcEditId?'Modifica voce':'Nuova voce'}</h3><button class="iconbtn" data-act="sheet-close" aria-label="Chiudi">${svg('x')}</button></div>
     <div class="sheet-body">
-      <label class="field"><span>Tipo voce</span><select id="fc-kind" data-act="fc-kind">${Object.keys(FC_KINDS).map(k=>`<option value="${k}" ${k===d.kind?'selected':''}>${FC_KINDS[k].label}</option>`).join('')}</select></label>
-      <p class="hint" style="margin-top:-2px">${fcKindMeta(d.kind).hint}</p>
-      <label class="field"><span>Nome</span><input id="fc-name" placeholder="Es. Mutuo, Bollo auto, Prestito" value="${escapeHtml(d.name||'')}"></label>
+      <label class="field"><span>Direzione</span><select id="fc-flow" data-act="fc-kind">
+        <option value="uscita" ${!isInc?'selected':''}>Uscita (spesa)</option>
+        <option value="entrata" ${isInc?'selected':''}>Entrata (stipendio, affitto…)</option>
+      </select></label>
+      <label class="field"><span>Tipo voce</span><select id="fc-kind" data-act="fc-kind">${kindKeys.map(k=>`<option value="${k}" ${k===d.kind?'selected':''}>${FC_KINDS[k].label}</option>`).join('')}</select></label>
+      <p class="hint" style="margin-top:-2px">${hintText}</p>
+      <label class="field"><span>Nome</span><input id="fc-name" placeholder="${isInc?'Es. Stipendio, Affitto casa':'Es. Mutuo, Bollo auto, Prestito'}" value="${escapeHtml(d.name||'')}"></label>
       <div class="filters">
-        <label class="field"><span>Fascia</span><select id="fc-macro">${MACROS.map(m=>`<option value="${m.key}" ${m.key===d.macro?'selected':''}>${m.label}</option>`).join('')}</select></label>
-        <label class="field"><span>Gruppo (opz.)</span><input id="fc-group" list="fc-grp-list" placeholder="Es. Bollo Veicoli" value="${escapeHtml(d.group||'')}"><datalist id="fc-grp-list">${groupDatalist()}</datalist></label>
+        ${catRow}
+        <label class="field"><span>Gruppo (opz.)</span><input id="fc-group" list="fc-grp-list" placeholder="${isInc?'Es. Affitti':'Es. Bollo Veicoli'}" value="${escapeHtml(d.group||'')}"><datalist id="fc-grp-list">${groupDatalist()}</datalist></label>
       </div>
-      <label class="field"><span>Sottocategoria (opz.)</span><input id="fc-sub" placeholder="Lascia vuoto per usare il nome" value="${escapeHtml(d.sub||'')}"></label>
+      ${isInc?'':`<label class="field"><span>Sottocategoria (opz.)</span><input id="fc-sub" placeholder="Lascia vuoto per usare il nome" value="${escapeHtml(d.sub||'')}"></label>`}
       <label class="field"><span>${acctLabel}</span><select id="fc-account">${accountOptions(d.account,true)}</select></label>
       ${block}
       <div class="sheet-error" id="fc-err"></div>
@@ -1286,7 +1327,7 @@ function applyFcPattern(){
 function readFcAmounts(){ const arr=Array(12).fill(0); document.querySelectorAll('.fc-in').forEach(inp=>{ const i=+inp.dataset.mi; const n=parseAmount(inp.value); arr[i]=isNaN(n)?0:Math.round(n*100)/100; }); return arr; }
 function readFcDraft(){
   const v=id=>{ const e=el(id); return e?e.value:''; };
-  const d={ kind:v('fc-kind')||'ricorrente', name:v('fc-name'), group:v('fc-group'), macro:v('fc-macro')||'incomprimibili', sub:v('fc-sub'), account:v('fc-account'),
+  const d={ kind:v('fc-kind')||'ricorrente', flow:(v('fc-flow')==='entrata'?'entrata':'uscita'), name:v('fc-name'), group:v('fc-group'), macro:v('fc-macro')||'incomprimibili', sub:v('fc-sub'), cat:v('fc-cat'), account:v('fc-account'),
     amounts:readFcAmounts(),
     rataAmount:v('fc-rata'), nRate:v('fc-nrate'), startMonth:v('fc-smonth'), startYear:v('fc-syear'), linkPass: el('fc-linkpass')?el('fc-linkpass').checked:true,
     target:v('fc-target'), dueMonth:v('fc-duemonth'), dueYear:v('fc-dueyear'), dueDay:v('fc-dueday'), accStartMonth:v('fc-accmonth'), accStartYear:curYear(), fundAccount:v('fc-fund'),
@@ -1297,7 +1338,11 @@ function readFcDraft(){
 async function saveFcItem(){
   const d=readFcDraft(); const err=el('fc-err'); const name=(d.name||'').trim();
   if(!name){ if(err) err.textContent='Dai un nome alla voce.'; return; }
-  const base={ name, kind:d.kind, group:(d.group||'').trim(), macro:d.macro||'incomprimibili', sub:(d.sub||'').trim(), account:d.account||'' };
+  const isInc = d.flow==='entrata';
+  if(isInc && (d.kind==='rata'||d.kind==='accantonamento')){ if(err) err.textContent='Per le entrate usa Ricorrente o Scadenza singola.'; return; }
+  const base = isInc
+    ? { name, kind:d.kind, flow:'entrata', group:(d.group||'').trim(), macro:null, sub:(d.cat||'Altro'), account:d.account||'' }
+    : { name, kind:d.kind, flow:'uscita', group:(d.group||'').trim(), macro:d.macro||'incomprimibili', sub:(d.sub||'').trim(), account:d.account||'' };
   let rec;
   if(d.kind==='rata'){
     const rata=parseAmount(d.rataAmount), n=parseInt(d.nRate,10);
@@ -1343,6 +1388,106 @@ async function saveSnapshot(){
   try{ if(existing) await store.update('snapshots', existing.id, rec); else await store.add('snapshots', rec); toast('Fotografia del patrimonio salvata'); }
   catch(e){ console.warn(e); toast('Errore nel salvataggio'); }
 }
+const MEMBER_PALETTE = ['#3E6B63','#B07D3F','#9A5640','#6E7B4F','#5A6473','#7A5566'];
+async function addMember(name){
+  const nm=(name||'').trim(); if(!nm) return;
+  if(DATA.members.some(m=>m.name.trim().toLowerCase()===nm.toLowerCase())){ toast('Esiste già un membro con questo nome'); return; }
+  const color=MEMBER_PALETTE[DATA.members.length % MEMBER_PALETTE.length];
+  const uid='m'+Date.now().toString(36)+Math.random().toString(36).slice(2,6);
+  try{ await store.add('members',{ uid, name:nm, color, email:'', manual:true }); toast('Membro aggiunto'); }
+  catch(e){ console.warn(e); toast('Errore nel salvataggio'); }
+}
+async function deleteMember(id, uid){
+  if(uid===me.uid){ toast('Non puoi rimuovere il tuo profilo'); return; }
+  const m=DATA.members.find(x=>x.uid===uid); const nm=m?m.name:'questo membro';
+  let msg=`Rimuovere ${nm}?\nI movimenti già registrati restano, ma senza nome accanto.`;
+  if(m&&m.email) msg+=`\nNota: se ${nm} accede di nuovo con la sua email, il profilo ricompare.`;
+  if(!confirm(msg)) return;
+  try{
+    if(store.mode==='local' && store.local && store.local.removeMember) store.local.removeMember(uid);
+    else await store.remove('members', id||uid);
+    toast('Membro rimosso');
+  }catch(e){ console.warn(e); toast('Errore nella rimozione'); }
+}
+/* ===================== Riparazione duplicati (post-import) ===================== */
+function txFingerprint(t){
+  return [ t.type, t.date, Math.round((+t.amount||0)*100), t.account||'', t.fromAccount||'', t.toAccount||'', t.dir||'',
+    t.macro||'', (t.sub||'').trim().toLowerCase(), (t.note||'').trim().toLowerCase(), (t.vehicle||'').trim().toLowerCase(),
+    t.excludeFromTotals?'x':'' ].join('|');
+}
+async function repairDuplicates(){
+  const norm=s=>(s||'').trim().toLowerCase();
+  const members=[...DATA.members], accounts=[...DATA.accounts], forecast=[...DATA.forecast], txs=[...DATA.transactions];
+
+  // 1) Membri con lo stesso nome → tengo il profilo "vero" (io / con email), ricollego chi-ha-speso
+  const mGroups={}; members.forEach(m=>{ (mGroups[norm(m.name)]=mGroups[norm(m.name)]||[]).push(m); });
+  const memberRemap={}; const mDel=[];
+  Object.values(mGroups).forEach(g=>{
+    if(g.length<2) return;
+    g.sort((a,b)=>((b.uid===me.uid?4:0)+(b.email?2:0)) - ((a.uid===me.uid?4:0)+(a.email?2:0)));
+    const keep=g[0]; g.slice(1).forEach(m=>{ memberRemap[m.uid]=keep.uid; mDel.push(m); });
+  });
+  const keptUids=new Set(members.filter(m=>!mDel.includes(m)).map(m=>m.uid));
+
+  // 2) Conti con lo stesso nome → tengo il più referenziato, ricollego i movimenti
+  const refCount={}; txs.forEach(t=>{ [t.account,t.fromAccount,t.toAccount].forEach(id=>{ if(id) refCount[id]=(refCount[id]||0)+1; }); });
+  const aGroups={}; accounts.forEach(a=>{ (aGroups[norm(a.name)]=aGroups[norm(a.name)]||[]).push(a); });
+  const accRemap={}; const aDel=[];
+  Object.values(aGroups).forEach(g=>{
+    if(g.length<2) return;
+    g.sort((a,b)=>(refCount[b.id]||0)-(refCount[a.id]||0) || (a.order||0)-(b.order||0));
+    const keep=g[0]; g.slice(1).forEach(a=>{ accRemap[a.id]=keep.id; aDel.push(a); });
+  });
+
+  // 3) Voci previsionale uguali (nome+gruppo+tipo+direzione) → tengo la prima, ricollego i planKey
+  const fGroups={}; forecast.forEach(f=>{ const k=[norm(f.name),norm(f.group),f.kind||'ricorrente',f.flow||'uscita'].join('|'); (fGroups[k]=fGroups[k]||[]).push(f); });
+  const planRemap={}; const fDel=[];
+  Object.values(fGroups).forEach(g=>{
+    if(g.length<2) return;
+    g.sort((a,b)=>(a.order||0)-(b.order||0));
+    const keep=g[0]; g.slice(1).forEach(f=>{ planRemap[f.id]=keep.id; fDel.push(f); });
+  });
+
+  // 4) Movimenti: applico i ricollegamenti "virtualmente", poi deduplica per impronta
+  const patched = txs.map(t=>{
+    const p={};
+    if(t.account&&accRemap[t.account]) p.account=accRemap[t.account];
+    if(t.fromAccount&&accRemap[t.fromAccount]) p.fromAccount=accRemap[t.fromAccount];
+    if(t.toAccount&&accRemap[t.toAccount]) p.toAccount=accRemap[t.toAccount];
+    if(t.paidBy&&memberRemap[t.paidBy]) p.paidBy=memberRemap[t.paidBy];
+    if(t.enteredBy&&memberRemap[t.enteredBy]) p.enteredBy=memberRemap[t.enteredBy];
+    if(t.planKey){ const i=t.planKey.indexOf(':'); if(i>0){ const fid=t.planKey.slice(0,i); if(planRemap[fid]) p.planKey=planRemap[fid]+t.planKey.slice(i); } }
+    return { t, p, v:{ ...t, ...p } };
+  });
+  const byFp={}; patched.forEach(x=>{ const fp=txFingerprint(x.v); (byFp[fp]=byFp[fp]||[]).push(x); });
+  const score=v=>(v.planKey?2:0)+(keptUids.has(v.paidBy)?1:0);
+  const tDel=[], tUpd=[];
+  Object.values(byFp).forEach(g=>{
+    g.sort((a,b)=>score(b.v)-score(a.v));
+    const keep=g[0]; if(Object.keys(keep.p).length) tUpd.push(keep);
+    g.slice(1).forEach(x=>tDel.push(x.t));
+  });
+
+  // Ricollegamenti residui su conti/voci tenuti (carta→conto pagamento, voce→conto/fondo)
+  const aUpd=accounts.filter(a=>!aDel.includes(a)&&a.linkedAccount&&accRemap[a.linkedAccount]).map(a=>({ id:a.id, p:{ linkedAccount:accRemap[a.linkedAccount] } }));
+  const fUpd=forecast.filter(f=>!fDel.includes(f)).map(f=>{ const p={}; if(f.account&&accRemap[f.account])p.account=accRemap[f.account]; if(f.fundAccount&&accRemap[f.fundAccount])p.fundAccount=accRemap[f.fundAccount]; return Object.keys(p).length?{ id:f.id, p }:null; }).filter(Boolean);
+
+  const tot=mDel.length+aDel.length+fDel.length+tDel.length;
+  if(!tot){ toast('Nessun duplicato trovato'); return; }
+  if(!confirm(`Trovati duplicati:\n· ${tDel.length} movimenti\n· ${aDel.length} conti\n· ${fDel.length} voci del previsionale\n· ${mDel.length} membri\n\nNe viene conservata una copia sola e i riferimenti vengono ricollegati.\nConsiglio: fai prima "Esporta tutto (JSON)" come copia di sicurezza.\n\nProcedere?`)) return;
+  toast('Riparazione in corso…');
+  try{
+    for(const x of tUpd) await store.update('transactions', x.t.id, x.p);
+    for(const u of fUpd) await store.update('forecast', u.id, u.p);
+    for(const u of aUpd) await store.update('accounts', u.id, u.p);
+    for(const t of tDel) await store.remove('transactions', t.id);
+    for(const f of fDel) await store.remove('forecast', f.id);
+    for(const a of aDel) await store.remove('accounts', a.id);
+    for(const m of mDel){ if(store.mode==='local'&&store.local&&store.local.removeMember) store.local.removeMember(m.uid); else await store.remove('members', m.id||m.uid); }
+    toast(`Fatto: rimossi ${tDel.length} movimenti, ${aDel.length} conti, ${fDel.length} voci, ${mDel.length} membri doppi`);
+  }catch(e){ console.warn('repair',e); toast('Errore durante la riparazione. Riprova.'); }
+}
+
 function openImport(){
   let inp=el('import-file');
   if(!inp){
@@ -1481,6 +1626,9 @@ function onClick(e){
     case 'logout': if(modalOpen) closeSheet(); store.logout(); break;
     case 'export': exportJSON(); break;
     case 'import': openImport(); break;
+    case 'dedup': repairDuplicates(); break;
+    case 'member-add': { const inp=el('newmember'); if(inp&&inp.value.trim()){ addMember(inp.value.trim()); inp.value=''; } break; }
+    case 'member-del': deleteMember(ds.id, ds.uid); break;
     case 'install': doInstall(); break;
     case 'cat-add': catAdd(ds.group); break;
     case 'cat-del': catDel(ds.group, ds.name); break;
