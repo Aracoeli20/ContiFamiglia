@@ -359,3 +359,22 @@ code{font-family:ui-monospace,Menlo,monospace;font-size:.85em;background:var(--s
 .fc-foot.fc-saldo .pos{color:var(--acqua)}
 .fc-foot.fc-saldo .neg{color:var(--terra)}
 .member .btn.sm{flex:0 0 auto;padding:6px 9px}
+
+/* ---------- v3.2 · Obiettivi di risparmio + Regola 50/30/20 ---------- */
+.goal-row .row-main{width:100%}
+.goal-bar{display:block;height:8px;border-radius:5px;background:var(--surface-2);overflow:hidden;margin:6px 0 4px}
+.goal-fill{display:block;height:100%;border-radius:5px;background:var(--gc,#3E6B63);transition:width .3s ease}
+.goal-fill.over{background:var(--terra)}
+.b532-ins{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin:2px 0 10px}
+.b532-in{display:flex;flex-direction:column;gap:4px;font-size:.78rem;color:var(--muted)}
+.b532-box{display:flex;align-items:center;gap:4px;background:var(--surface-2);border-radius:var(--r-sm);padding:6px 8px}
+.b532-box input{width:100%;min-width:0;border:0;background:transparent;font:inherit;font-weight:700;color:var(--ink);text-align:right;padding:0}
+.b532-box input:focus{outline:none}
+.b532-pc{color:var(--muted);font-weight:600}
+.b532-row{padding:7px 0;border-bottom:1px solid var(--line-2)}
+.b532-row:last-of-type{border-bottom:0}
+.b532-top{display:flex;align-items:baseline;justify-content:space-between;gap:10px;font-size:.92rem}
+.b532-top b{font-variant-numeric:tabular-nums}
+.b532-sub{font-size:.8rem;margin-top:2px}
+.b532-sub .pos{color:var(--acqua)}
+.b532-sub .neg{color:var(--terra)}
