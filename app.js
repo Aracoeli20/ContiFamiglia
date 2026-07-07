@@ -115,19 +115,22 @@ const P = {
   percent:'<circle cx="7.5" cy="7.5" r="2.5"/><circle cx="16.5" cy="16.5" r="2.5"/><path d="M19 5L5 19"/>',
   card:'<rect x="3" y="6" width="18" height="12" rx="2"/><path d="M3 10h18"/>',
   upload:'<path d="M12 3v13"/><path d="M7 8l5-5 5 5"/><path d="M5 21h14"/>',
+  target:'<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="4.5"/><circle cx="12" cy="12" r="1.2"/>',
   layers:'<path d="M12 3l9 5-9 5-9-5z"/><path d="M3 13l9 5 9-5"/>'
 };
 const svg = (k,cls='ic') => `<svg viewBox="0 0 24 24" class="${cls}" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${P[k]||''}</svg>`;
 
 /* ===================== Stato ===================== */
 let store=null, me=null, deferredPrompt=null;
-const DATA = { transactions:[], assets:[], snapshots:[], members:[], accounts:[], forecast:[], categories:DEFAULT_CATEGORIES };
-let catSeeded=false, accountsSeeded=false, fcSeeded=false;
+const DATA = { transactions:[], assets:[], snapshots:[], members:[], accounts:[], forecast:[], goals:[], categories:DEFAULT_CATEGORIES };
+let BUDGET = { needs:50, wants:30, save:20 };
+const NEEDS_MACROS = ['incomprimibili','oggettive'];
+let catSeeded=false, accountsSeeded=false, fcSeeded=false, budgetSeeded=false;
 const subs={};
 let view='cruscotto';
 let fMonth=curMonth(), fPerson='all', fType='all', fAccount='all', fYear=curYear();
 let modalOpen=false, pendingRender=false;
-let sheetType='uscita', movEditId=null, assetEditId=null, accEditId=null, fcEditId=null;
+let sheetType='uscita', movEditId=null, assetEditId=null, accEditId=null, fcEditId=null, goalEditId=null;
 let opAccId=null, opMode='debit', gateTab='login';
 
 /* ===================== Boot ===================== */
@@ -163,6 +166,12 @@ function ensureData(){
     if(!a.length && !fcSeeded){ fcSeeded=true; seedForecast(); }
     softRender();
   });
+  subs.gl = store.subscribe('goals', a=>{ DATA.goals=[...a].sort((x,y)=>(x.order||0)-(y.order||0)); softRender(); });
+  subs.bd = store.subscribeConfig ? store.subscribeConfig('budget', o=>{
+    if(o && isFinite(+o.needs)){ BUDGET={ needs:+o.needs, wants:+o.wants, save:+o.save }; }
+    else if(!budgetSeeded){ budgetSeeded=true; store.saveConfig && store.saveConfig('budget', BUDGET); }
+    softRender();
+  }) : null;
   subs.ct = store.subscribeCategories(c=>{
     if(c){ DATA.categories = normalizeCats(c); }
     else if(!catSeeded){ catSeeded=true; DATA.categories=DEFAULT_CATEGORIES; store.saveCategories(DEFAULT_CATEGORIES); }
@@ -255,6 +264,34 @@ function rataPassivita(){
   return DATA.forecast.filter(i=>i.kind==='rata' && i.linkPass!==false)
     .map(i=>({ item:i, name:i.name, residuo:rataResiduo(i), paid:rataPaidCount(i,curYear(),new Date().getMonth()), n:+i.nRate||0 }))
     .filter(x=>x.residuo>0);
+}
+
+/* ===================== Obiettivi di risparmio ===================== */
+function avgIncomeMonthly(){
+  const now=curMonth(); const vals=[];
+  for(let i=0;i<3;i++){ const ym=shiftMonth(now,-i); const v=sum(txMonth(ym).filter(countsIncome).map(t=>t.amount)); if(v>0) vals.push(v); }
+  return vals.length ? Math.round(sum(vals)/vals.length*100)/100 : 0;
+}
+function goalStats(g){
+  const bal=computeBalances()[g.account]||0;
+  const target=+g.target||0;
+  const remaining=Math.max(0, Math.round((target-bal)*100)/100);
+  const pct=target>0?Math.max(0,Math.min(100,bal/target*100)):0;
+  const now=new Date(); const nowIdx=now.getFullYear()*12+now.getMonth();
+  let monthsToDue=null, quotaFromDue=null, duePast=false;
+  if(g.dueYear!=null&&g.dueYear!==''&&g.dueMonth!=null&&g.dueMonth!==''){
+    const dueIdx=(+g.dueYear)*12+(+g.dueMonth);
+    monthsToDue=dueIdx-nowIdx+1;
+    if(monthsToDue<1){ duePast=remaining>0; monthsToDue=Math.max(monthsToDue,0); quotaFromDue=remaining; }
+    else quotaFromDue=Math.round(remaining/monthsToDue*100)/100;
+  }
+  let monthsFromMonthly=null, etaY=null, etaM=null;
+  const monthly=+g.monthly||0;
+  if(monthly>0&&remaining>0){
+    monthsFromMonthly=Math.ceil(remaining/monthly);
+    const etaIdx=nowIdx+monthsFromMonthly-1; etaY=Math.floor(etaIdx/12); etaM=etaIdx%12;
+  }
+  return { bal, target, remaining, pct, monthsToDue, quotaFromDue, duePast, monthly, monthsFromMonthly, etaY, etaM };
 }
 
 function carryStatus(ym){
@@ -566,6 +603,52 @@ function viewPrevisionale(){
   </section>`;
 }
 
+function budgetCard(list, ent, usc){
+  const p=BUDGET; const sumP=Math.round((+p.needs||0)+(+p.wants||0)+(+p.save||0));
+  const needsA=Math.round(sum(list.filter(t=>countsExpense(t)&&NEEDS_MACROS.includes(t.macro)).map(t=>t.amount))*100)/100;
+  const wantsA=Math.round(sum(list.filter(t=>countsExpense(t)&&t.macro==='superflue').map(t=>t.amount))*100)/100;
+  const saveA=Math.round((ent-usc)*100)/100;
+  const tN=Math.round(ent*(+p.needs||0))/100, tW=Math.round(ent*(+p.wants||0))/100, tS=Math.round(ent*(+p.save||0))/100;
+  const pctIn=(id,val,lab)=>`<label class="b532-in"><span>${lab}</span><span class="b532-box"><input id="${id}" data-act="budget-set" type="number" inputmode="numeric" min="0" max="100" value="${Math.round(+val||0)}"><span class="b532-pc">%</span></span></label>`;
+  const row=(lab,color,target,actual,isSave)=>{
+    const w = target>0 ? Math.min(100, Math.max(0,actual)/target*100) : (actual>0?100:0);
+    const d=Math.round((actual-target)*100)/100;
+    const tag = isSave
+      ? (d>=0?`<span class="pos">centrato (+${eur(d)})</span>`:`<span class="neg">mancano ${eur(-d)}</span>`)
+      : (d<=0?`<span class="pos">margine ${eur(-d)}</span>`:`<span class="neg">oltre di ${eur(d)}</span>`);
+    const bad = isSave ? actual<target : actual>target;
+    return `<div class="b532-row">
+      <div class="b532-top"><span>${lab} <span class="muted sm">· obiettivo ${eur(target)}</span></span><b>${eur(Math.round(actual*100)/100)}</b></div>
+      <span class="goal-bar"><span class="goal-fill${bad?' over':''}" style="width:${w.toFixed(1)}%;--gc:${color}"></span></span>
+      <div class="b532-sub">${tag}</div>
+    </div>`;
+  };
+  let advice='';
+  if(ent>0){
+    const deficit=Math.round((tS-saveA)*100)/100;
+    if(deficit>0){
+      const overW=Math.max(0,Math.round((wantsA-tW)*100)/100), overN=Math.max(0,Math.round((needsA-tN)*100)/100);
+      const parts=[];
+      if(overW>0) parts.push(`lo svago supera la sua quota di ${eur(overW)}`);
+      if(overN>0) parts.push(`le necessità di ${eur(overN)}`);
+      advice=`Mancano ${eur(deficit)} all'obiettivo di risparmio${parts.length?` — ${parts.join(' e ')}`:''}.`;
+    } else advice=`Obiettivo di risparmio centrato: ${eur(saveA)}${(-deficit)>0?` (${eur(-deficit)} oltre il target)`:''}.`;
+  }
+  return `
+  <section class="card">
+    <div class="card-h"><h3 class="card-title">Regola ${Math.round(+p.needs||0)}/${Math.round(+p.wants||0)}/${Math.round(+p.save||0)}</h3><span class="muted sm">entrate ${eur(ent)}</span></div>
+    ${ent>0?`
+    <div class="b532-ins">${pctIn('bg-needs',p.needs,'Necessità')}${pctIn('bg-wants',p.wants,'Svago')}${pctIn('bg-save',p.save,'Risparmio')}</div>
+    ${sumP!==100?`<div class="calc-row warn" style="margin:2px 0 6px"><span>Le percentuali sommano a ${sumP}, non a 100.</span></div>`:''}
+    ${row('Necessità','#927A45',tN,needsA,false)}
+    ${row('Svago e hobby','#C2A36A',tW,wantsA,false)}
+    ${row('Risparmio','#3E6B63',tS,saveA,true)}
+    ${advice?`<p class="hint" style="margin-top:8px">${advice}</p>`:''}
+    <p class="hint">Necessità = fasce Incomprimibili + Oggettive · Svago = Superflue · Risparmio = entrate − uscite del mese. Cambia le percentuali e le quote si ricalcolano.</p>
+    `:emptyState('Nessuna entrata nel mese: registra le entrate per calcolare le quote.')}
+  </section>`;
+}
+
 /* ===================== Vista: Delta ===================== */
 function barsH(items){
   const max = Math.max(...items.map(i=>i.value), 1);
@@ -628,6 +711,7 @@ function viewDelta(){
     <div class="big-v ${delta>=0?'pos':'neg'}">${signed(delta)}</div>
     <div class="muted">${delta>=0?'Risparmio del mese':'Avete speso più di quanto entrato'}</div>
   </section>
+  ${budgetCard(list, ent, usc)}
   <section class="card"><div class="card-h"><h3 class="card-title">Entrate e uscite</h3><span class="muted sm">ultimi 8 mesi</span></div>${hasEU?groupedBars(euSeries):emptyState('Dati insufficienti per il grafico.')}</section>
   <section class="card"><div class="card-h"><h3 class="card-title">Per macroarea</h3></div>${usc>0?barsH(macroBars):emptyState('Nessuna uscita nel mese.')}</section>
   <section class="card"><div class="card-h"><h3 class="card-title">Chi ha speso</h3></div>${personBars.length?barsH(personBars):emptyState('Nessuna uscita nel mese.')}</section>
@@ -695,6 +779,34 @@ function viewPatrimonio(){
     <p class="hint" style="margin-top:6px">Non conteggiati in liquidità né nel patrimonio: soldi già presenti in un altro conto (es. la quota di Samuele investita nel conto investimento).</p>` : ''}
     <button class="btn ghost block" data-act="acc-new" style="margin-top:12px">${svg('plus')} Aggiungi conto o carta</button>
   </section>
+
+  ${(()=>{ const avg=avgIncomeMonthly();
+    const rows = DATA.goals.map(g=>{
+      const s=goalStats(g); const a=accountById(g.account);
+      let plan='';
+      if(s.remaining<=0) plan='Obiettivo raggiunto';
+      else {
+        const bits=[];
+        if(s.quotaFromDue!=null && !s.duePast) bits.push(`${eur(s.quotaFromDue)}/mese per ${s.monthsToDue} mesi${avg>0?` · ≈${Math.round(s.quotaFromDue/avg*100)}% delle entrate`:''}`);
+        if(s.duePast) bits.push(`scadenza passata · mancano ${eur(s.remaining)}`);
+        if(s.monthsFromMonthly!=null) bits.push(`a ${eur(s.monthly)}/mese: pronti a ${MESI_AB[s.etaM]} ${s.etaY}`);
+        if(!bits.length) bits.push(`mancano ${eur(s.remaining)}`);
+        plan=bits.join(' · ');
+      }
+      return `<button class="row goal-row" data-act="goal-edit" data-id="${g.id}">
+        <span class="row-main">
+          <span class="row-cat">${escapeHtml(g.name)} <span class="muted sm">· ${a?escapeHtml(a.name):'—'}</span></span>
+          <span class="goal-bar"><span class="goal-fill" style="width:${s.pct.toFixed(1)}%"></span></span>
+          <span class="row-meta">${eur(s.bal)} di ${eur(s.target)} (${Math.round(s.pct)}%) · ${plan}</span>
+        </span>
+      </button>`;
+    }).join('');
+    return `<section class="card">
+    <div class="card-h"><h3 class="card-title">${svg('target','ic-xs')} Obiettivi di risparmio</h3></div>
+    ${rows?`<div class="list">${rows}</div>`:emptyState('Nessun obiettivo. Es.: Fondo emergenza, 10.000 € entro luglio 2028 → l\u2019app calcola la quota mensile.')}
+    <button class="btn ghost block" data-act="goal-new" style="margin-top:10px">${svg('plus')} Aggiungi obiettivo</button>
+    ${rows?`<p class="hint" style="margin-top:8px">Il progresso è il saldo del conto collegato: versa con un giroconto. Se vuoi la quota anche nel piano mensile, crea un Accantonamento nel Previsionale verso lo stesso conto.</p>`:''}
+  </section>`; })()}
 
   <section class="card">
     <div class="card-h"><h3 class="card-title">Altri beni</h3><b>${eur(np.otherA)}</b></div>
@@ -1388,6 +1500,76 @@ async function saveSnapshot(){
   try{ if(existing) await store.update('snapshots', existing.id, rec); else await store.add('snapshots', rec); toast('Fotografia del patrimonio salvata'); }
   catch(e){ console.warn(e); toast('Errore nel salvataggio'); }
 }
+/* ===================== Modale: Obiettivo di risparmio ===================== */
+function openGoal(g){
+  goalEditId = g?g.id:null;
+  const Y=curYear();
+  const d = g ? { name:g.name||'', account:g.account||'', target:g.target, dueYear:(g.dueYear!=null?g.dueYear:''), dueMonth:(g.dueMonth!=null?g.dueMonth:''), monthly:g.monthly }
+              : { name:'', account:'', target:'', dueYear:'', dueMonth:'', monthly:'' };
+  const num=v=>(v!==''&&v!=null)?String(v).replace('.',','):'';
+  const monthOpts=`<option value="">—</option>`+MESI.map((m,i)=>`<option value="${i}" ${String(i)===String(d.dueMonth)?'selected':''}>${m}</option>`).join('');
+  const yearOpts=(()=>{ let o=`<option value="">—</option>`; for(let y=Y;y<=Y+10;y++) o+=`<option value="${y}" ${String(y)===String(d.dueYear)?'selected':''}>${y}</option>`; return o; })();
+  openSheet(`
+    <div class="sheet-h"><h3 class="sheet-title">${goalEditId?'Modifica obiettivo':'Nuovo obiettivo'}</h3><button class="iconbtn" data-act="sheet-close" aria-label="Chiudi">${svg('x')}</button></div>
+    <div class="sheet-body">
+      <label class="field"><span>Nome</span><input id="gl-name" placeholder="Es. Fondo emergenza" value="${escapeHtml(d.name)}"></label>
+      <div class="filters">
+        <label class="field"><span>Conto collegato</span><select id="gl-account" data-act="goal-recalc">${accountOptions(d.account,true)}</select></label>
+        <label class="field"><span>Importo obiettivo (€)</span><input id="gl-target" data-act="goal-recalc" inputmode="decimal" placeholder="es. 10000" value="${num(d.target)}"></label>
+      </div>
+      <div class="filters three">
+        <label class="field"><span>Entro (mese)</span><select id="gl-duemonth" data-act="goal-recalc">${monthOpts}</select></label>
+        <label class="field"><span>Anno</span><select id="gl-dueyear" data-act="goal-recalc">${yearOpts}</select></label>
+        <label class="field"><span>oppure €/mese</span><input id="gl-monthly" data-act="goal-recalc" inputmode="decimal" placeholder="es. 400" value="${num(d.monthly)}"></label>
+      </div>
+      <div id="gl-calc" class="fc-calc"></div>
+      <div class="sheet-error" id="gl-err"></div>
+      <div class="sheet-actions">
+        ${goalEditId?`<button class="btn danger" data-act="goal-delete" data-id="${goalEditId}">${svg('trash')} Elimina</button>`:''}
+        <button class="btn primary grow" data-act="goal-save">${svg('check')} Salva</button>
+      </div>
+      <p class="hint" style="margin-top:0">Metti la scadenza per sapere quanto serve al mese, oppure la quota mensile per sapere quando arrivi (vanno bene anche entrambe). Il saldo attuale del conto conta già come progresso.</p>
+    </div>`);
+  updateGoalCalc();
+}
+function updateGoalCalc(){
+  const box=el('gl-calc'); if(!box) return;
+  const v=id=>{ const e=el(id); return e?e.value:''; };
+  const g={ account:v('gl-account'), target:parseAmount(v('gl-target'))||0,
+    dueMonth:v('gl-duemonth')===''?'':parseInt(v('gl-duemonth'),10), dueYear:v('gl-dueyear')===''?'':parseInt(v('gl-dueyear'),10),
+    monthly:parseAmount(v('gl-monthly'))||0 };
+  if(!(g.target>0)){ box.innerHTML=''; return; }
+  const s=goalStats(g); const avg=avgIncomeMonthly(); let h='';
+  h+=`<div class="calc-row"><span>Già sul conto</span><b>${eur(s.bal)} · mancano ${eur(s.remaining)}</b></div>`;
+  if(s.remaining<=0) h+=`<div class="calc-row"><span>Stato</span><b>Obiettivo già raggiunto</b></div>`;
+  else{
+    if(s.quotaFromDue!=null&&!s.duePast) h+=`<div class="calc-row"><span>Servono</span><b>${eur(s.quotaFromDue)}/mese per ${s.monthsToDue} mesi${avg>0?` · ≈${Math.round(s.quotaFromDue/avg*100)}% delle entrate`:''}</b></div>`;
+    if(s.quotaFromDue!=null&&s.duePast) h+=`<div class="calc-row warn"><span>La scadenza scelta è già passata.</span></div>`;
+    if(s.monthsFromMonthly!=null) h+=`<div class="calc-row"><span>A ${eur(s.monthly)}/mese</span><b>${s.monthsFromMonthly} mesi · pronti a ${MESI_AB[s.etaM]} ${s.etaY}</b></div>`;
+  }
+  box.innerHTML=h;
+}
+async function saveGoal(){
+  const v=id=>{ const e=el(id); return e?e.value:''; }; const err=el('gl-err');
+  const name=v('gl-name').trim(); if(!name){ if(err) err.textContent='Dai un nome all\u2019obiettivo.'; return; }
+  const account=v('gl-account'); if(!account){ if(err) err.textContent='Scegli il conto collegato.'; return; }
+  const target=parseAmount(v('gl-target')); if(!(target>0)){ if(err) err.textContent='Inserisci l\u2019importo obiettivo.'; return; }
+  const dm=v('gl-duemonth'), dy=v('gl-dueyear'); const monthly=parseAmount(v('gl-monthly'));
+  if((dm==='')!==(dy==='')){ if(err) err.textContent='Per la scadenza servono sia mese sia anno.'; return; }
+  const rec={ name, account, target:Math.round(target*100)/100,
+    dueMonth: dm===''?null:parseInt(dm,10), dueYear: dy===''?null:parseInt(dy,10),
+    monthly: (monthly>0)?Math.round(monthly*100)/100:null };
+  try{
+    if(goalEditId) await store.update('goals', goalEditId, rec);
+    else { rec.order=DATA.goals.length; await store.add('goals', rec); }
+    const ed=!!goalEditId; closeSheet(); toast(ed?'Obiettivo aggiornato':'Obiettivo aggiunto');
+  }catch(e){ if(err) err.textContent='Errore nel salvataggio. Hai pubblicato la regola Firestore per "goals"?'; console.warn(e); }
+}
+async function deleteGoal(id){
+  if(!confirm('Eliminare questo obiettivo? Il conto e i soldi non vengono toccati.')) return;
+  try{ await store.remove('goals', id); closeSheet(); toast('Obiettivo eliminato'); }catch(e){ console.warn(e); }
+}
+
 const MEMBER_PALETTE = ['#3E6B63','#B07D3F','#9A5640','#6E7B4F','#5A6473','#7A5566'];
 async function addMember(name){
   const nm=(name||'').trim(); if(!nm) return;
@@ -1503,7 +1685,7 @@ async function handleImportFile(e){
   catch(err){ toast('File non leggibile o non in formato JSON'); return; }
   if(!data || typeof data!=='object'){ toast('File non valido'); return; }
   if(data.app!=='conti-famiglia'){ if(!confirm('Il file non sembra un backup di Conti di Famiglia. Importarlo comunque?')) return; }
-  const cols=['members','accounts','transactions','assets','snapshots','forecast'];
+  const cols=['members','accounts','transactions','assets','snapshots','forecast','goals'];
   const total=cols.reduce((s,c)=>s+(Array.isArray(data[c])?data[c].length:0),0);
   if(!total && !data.categories){ toast('Nel file non ci sono dati da importare'); return; }
   if(!confirm(`Importare ${total} elementi nel database attuale?\nVengono aggiunti a quelli presenti; gli stessi identificativi vengono aggiornati, non duplicati.`)) return;
@@ -1521,13 +1703,14 @@ async function handleImportFile(e){
       }
     }
     if(data.categories && store.saveCategories) await store.saveCategories(data.categories);
+    if(data.budget && store.saveConfig){ const b={ needs:+data.budget.needs||50, wants:+data.budget.wants||30, save:+data.budget.save||20 }; BUDGET=b; await store.saveConfig('budget', b); }
     if(modalOpen) closeSheet();
     const summary=Object.entries(counts).map(([k,v])=>`${v} ${k}`).join(', ');
     toast(summary?`Importati: ${summary}`:'Categorie importate');
   }catch(err){ console.warn('import',err); toast('Errore durante l\u2019importazione. Riprova.'); }
 }
 function exportJSON(){
-  const data={ app:'conti-famiglia', version:3, exportedAt:new Date().toISOString(), members:DATA.members, accounts:DATA.accounts, transactions:DATA.transactions, assets:DATA.assets, snapshots:DATA.snapshots, forecast:DATA.forecast, categories:DATA.categories };
+  const data={ app:'conti-famiglia', version:3, exportedAt:new Date().toISOString(), members:DATA.members, accounts:DATA.accounts, transactions:DATA.transactions, assets:DATA.assets, snapshots:DATA.snapshots, forecast:DATA.forecast, goals:DATA.goals, budget:BUDGET, categories:DATA.categories };
   const blob=new Blob([JSON.stringify(data,null,2)],{ type:'application/json' });
   const url=URL.createObjectURL(blob); const a=document.createElement('a');
   a.href=url; a.download=`conti-famiglia-${todayISO()}.json`; document.body.appendChild(a); a.click(); a.remove();
@@ -1629,6 +1812,10 @@ function onClick(e){
     case 'dedup': repairDuplicates(); break;
     case 'member-add': { const inp=el('newmember'); if(inp&&inp.value.trim()){ addMember(inp.value.trim()); inp.value=''; } break; }
     case 'member-del': deleteMember(ds.id, ds.uid); break;
+    case 'goal-new': openGoal(null); break;
+    case 'goal-edit': { const g=DATA.goals.find(x=>x.id===ds.id); if(g) openGoal(g); break; }
+    case 'goal-save': saveGoal(); break;
+    case 'goal-delete': deleteGoal(ds.id); break;
     case 'install': doInstall(); break;
     case 'cat-add': catAdd(ds.group); break;
     case 'cat-del': catDel(ds.group, ds.name); break;
@@ -1652,4 +1839,13 @@ function onChange(e){
   else if(act==='fc-recalc'){ updateFcCalc(); }
   else if(act==='ae-kind'){ const d=readAccountDraft(); renderAccountSheet(d); }
   else if(act==='int-calc'){ updateInterestCalc(); }
+  else if(act==='goal-recalc'){ updateGoalCalc(); }
+  else if(act==='budget-set'){
+    const n=Math.max(0,Math.min(100,+((el('bg-needs')||{}).value)||0));
+    const w=Math.max(0,Math.min(100,+((el('bg-wants')||{}).value)||0));
+    const s=Math.max(0,Math.min(100,+((el('bg-save')||{}).value)||0));
+    BUDGET={ needs:n, wants:w, save:s };
+    if(store.saveConfig) store.saveConfig('budget', BUDGET);
+    render();
+  }
 }

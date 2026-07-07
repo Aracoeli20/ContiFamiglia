@@ -9,7 +9,7 @@ function makeLocalStore(){
   const NS='conti:';
   const read=(k,d)=>{ try{ const v=localStorage.getItem(NS+k); return v==null?d:JSON.parse(v); }catch{ return d; } };
   const write=(k,v)=>{ try{ localStorage.setItem(NS+k, JSON.stringify(v)); }catch{} };
-  const subs={}; const catSubs=[];
+  const subs={}; const catSubs=[]; const cfgSubs={};
   const sortC=(c,a)=> (c==='transactions'||c==='snapshots')
     ? [...a].sort((x,y)=>(y.date||'').localeCompare(x.date||'')||(y.createdAt||0)-(x.createdAt||0))
     : a;
@@ -36,7 +36,9 @@ function makeLocalStore(){
     async remove(c,id){ write(c, read(c,[]).filter(x=>x.id!==id)); emit(c); },
     async adjustAccount(id,delta){ write('accounts', read('accounts',[]).map(x=>x.id===id?{...x,balance:(+x.balance||0)+delta}:x)); emit('accounts'); },
     subscribeCategories(cb){ catSubs.push(cb); cb(read('categories',null)); return ()=>{ const i=catSubs.indexOf(cb); if(i>=0) catSubs.splice(i,1); }; },
-    async saveCategories(o){ write('categories',o); catSubs.forEach(cb=>cb(o)); }
+    async saveCategories(o){ write('categories',o); catSubs.forEach(cb=>cb(o)); },
+    subscribeConfig(id,cb){ const k='config:'+id; (cfgSubs[k]=cfgSubs[k]||[]).push(cb); cb(read(k,null)); return ()=>{ cfgSubs[k]=(cfgSubs[k]||[]).filter(f=>f!==cb); }; },
+    async saveConfig(id,o){ const k='config:'+id; write(k,o); (cfgSubs[k]||[]).forEach(cb=>cb(o)); }
   };
 }
 
@@ -97,7 +99,9 @@ async function makeFirebaseStore(){
     async remove(c,id){ await deleteDoc(doc(db,c,id)); },
     async adjustAccount(id,delta){ try{ await updateDoc(doc(db,'accounts',id), { balance: increment(delta) }); }catch(e){ console.warn('adjustAccount',e&&e.code); } },
     subscribeCategories(cb){ return onSnapshot(doc(db,'config','categories'), s=>cb(s.exists()?s.data():null), e=>{ console.warn('cat',e&&e.code); cb(null); }); },
-    async saveCategories(o){ await setDoc(doc(db,'config','categories'), o); }
+    async saveCategories(o){ await setDoc(doc(db,'config','categories'), o); },
+    subscribeConfig(id,cb){ return onSnapshot(doc(db,'config',id), s=>cb(s.exists()?s.data():null), e=>{ console.warn('cfg',id,e&&e.code); cb(null); }); },
+    async saveConfig(id,o){ await setDoc(doc(db,'config',id), o); }
   };
 }
 
