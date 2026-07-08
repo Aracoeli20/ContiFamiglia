@@ -82,11 +82,29 @@ const el = id => document.getElementById(id);
 const eur = n => (Math.round((+n||0)*100)/100).toLocaleString('it-IT',{ style:'currency', currency:'EUR' });
 const eur0 = n => (Math.round(+n||0)).toLocaleString('it-IT',{ style:'currency', currency:'EUR', maximumFractionDigits:0 });
 function todayISO(){ const d=new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
-const curMonth = () => todayISO().slice(0,7);
+const curMonth = () => periodOf(todayISO());
 const curYear = () => new Date().getFullYear();
 function shiftMonth(ym,delta){ let [y,m]=ym.split('-').map(Number); m+=delta; while(m<1){m+=12;y--;} while(m>12){m-=12;y++;} return `${y}-${String(m).padStart(2,'0')}`; }
 const monthName = ym => { const [y,m]=ym.split('-'); return `${MESI[+m-1]} ${y}`; };
 const monthAbbr = ym => MESI_AB[+ym.slice(5,7)-1];
+const p2 = n => String(n).padStart(2,'0');
+function cycleDay(){ return Math.max(1, Math.min(28, parseInt(BUDGET.cycleDay,10)||1)); }
+function periodOf(iso){
+  const d=cycleDay(); const s=iso||''; if(d<=1) return s.slice(0,7);
+  const p=s.split('-'); if(p.length<3) return s.slice(0,7);
+  let y=+p[0], m=+p[1]; const day=+p[2];
+  if(day>=d){ m++; if(m>12){ m=1; y++; } }
+  return `${y}-${p2(m)}`;
+}
+function periodRange(ym){
+  const d=cycleDay(); const Y=+ym.slice(0,4), M=+ym.slice(5,7);
+  if(d<=1){ const last=new Date(Y,M,0).getDate(); return { startISO:`${Y}-${p2(M)}-01`, endISO:`${Y}-${p2(M)}-${p2(last)}` }; }
+  const endDay=Math.min(d-1, new Date(Y,M,0).getDate());
+  let sY=Y, sM=M-1; if(sM<1){ sM=12; sY=Y-1; }
+  const startDay=Math.min(d, new Date(sY,sM,0).getDate());
+  return { startISO:`${sY}-${p2(sM)}-${p2(startDay)}`, endISO:`${Y}-${p2(M)}-${p2(endDay)}` };
+}
+const periodLabel = ym => { const r=periodRange(ym); return `${dayShort(r.startISO)} – ${dayShort(r.endISO)}`; };
 const dayLabel = iso => { const [y,m,d]=iso.split('-'); return `${+d} ${MESI[+m-1].toLowerCase()} ${y}`; };
 const dayShort = iso => { const p=(iso||'').split('-'); return p.length===3?`${+p[2]}/${+p[1]}`:''; };
 const dueLabel = days => days<0?`scaduta ${-days}g fa`:(days===0?'oggi':(days===1?'domani':`tra ${days} giorni`));
@@ -97,7 +115,7 @@ const parseAmount = v => { const n=parseFloat(String(v==null?'':v).replace(/\s/g
 const sum = a => a.reduce((s,x)=>s+(+x||0),0);
 const memberById = id => DATA.members.find(m=>m.uid===id);
 const accountById = id => DATA.accounts.find(a=>a.id===id);
-const txMonth = ym => DATA.transactions.filter(t=>(t.date||'').slice(0,7)===ym);
+const txMonth = ym => DATA.transactions.filter(t=>periodOf(t.date)===ym);
 const signed = n => (n<0?'−':'') + eur(Math.abs(n));
 const isPL = t => (t.type==='uscita' || t.type==='entrata');
 const isMemoAcc = id => { const a=accountById(id); return !!(a && a.excludeNetWorth); };
@@ -140,7 +158,7 @@ const svg = (k,cls='ic') => `<svg viewBox="0 0 24 24" class="${cls}" fill="none"
 /* ===================== Stato ===================== */
 let store=null, me=null, deferredPrompt=null;
 const DATA = { transactions:[], assets:[], snapshots:[], members:[], accounts:[], forecast:[], goals:[], categories:DEFAULT_CATEGORIES };
-let BUDGET = { needs:50, wants:30, save:20, startDate:'' };
+let BUDGET = { needs:50, wants:30, save:20, startDate:'', cycleDay:1 };
 let budgetSource='preventivo';
 const NEEDS_MACROS = ['incomprimibili','oggettive'];
 let catSeeded=false, accountsSeeded=false, fcSeeded=false, budgetSeeded=false;
@@ -186,7 +204,7 @@ function ensureData(){
   });
   subs.gl = store.subscribe('goals', a=>{ DATA.goals=[...a].sort((x,y)=>(x.order||0)-(y.order||0)); softRender(); });
   subs.bd = store.subscribeConfig ? store.subscribeConfig('budget', o=>{
-    if(o && isFinite(+o.needs)){ BUDGET={ needs:+o.needs, wants:+o.wants, save:+o.save, startDate:o.startDate||'' }; }
+    if(o && isFinite(+o.needs)){ BUDGET={ needs:+o.needs, wants:+o.wants, save:+o.save, startDate:o.startDate||'', cycleDay:+o.cycleDay||1 }; }
     else if(!budgetSeeded){ budgetSeeded=true; store.saveConfig && store.saveConfig('budget', BUDGET); }
     softRender();
   }) : null;
@@ -311,6 +329,15 @@ function goalStats(g){
   }
   return { bal, target, remaining, pct, monthsToDue, quotaFromDue, duePast, monthly, monthsFromMonthly, etaY, etaM };
 }
+function lastSnapDelta(){
+  const s=[...DATA.snapshots].filter(x=>x.date).sort((a,b)=>a.date.localeCompare(b.date));
+  if(s.length<2) return null;
+  const prev=s[s.length-2], last=s[s.length-1];
+  const diff=Math.round(((+last.netto||0)-(+prev.netto||0))*100)/100;
+  const days=Math.max(1, Math.round((new Date(last.date+'T00:00:00')-new Date(prev.date+'T00:00:00'))/86400000));
+  const perMonth=Math.round(diff/days*(365/12)*100)/100;
+  return { prev, last, diff, days, perMonth };
+}
 
 function carryStatus(ym){
   const y=+ym.slice(0,4), mi=+ym.slice(5,7)-1;
@@ -396,7 +423,7 @@ function shell(content){
 }
 const tab = (k,label,icon) => `<button class="tab${view===k?' active':''}" data-act="goto" data-view="${k}" role="tab" aria-selected="${view===k}">${svg(icon)}<span>${label}</span></button>`;
 const viewHtml = () => ({ movimenti:viewMovimenti, previsionale:viewPrevisionale, delta:viewDelta, patrimonio:viewPatrimonio, impostazioni:viewImpostazioni }[view] || viewCruscotto)();
-const monthNav = () => `<div class="monthnav"><button class="iconbtn" data-act="month" data-dir="-1" aria-label="Mese precedente">${svg('chevL')}</button><span class="m">${monthName(fMonth)}</span><button class="iconbtn" data-act="month" data-dir="1" aria-label="Mese successivo">${svg('chevR')}</button></div>`;
+const monthNav = () => `<div class="monthnav"><button class="iconbtn" data-act="month" data-dir="-1" aria-label="Mese precedente">${svg('chevL')}</button><span class="m">${monthName(fMonth)}${cycleDay()>1?`<span class="m-range">${periodLabel(fMonth)}</span>`:''}</span><button class="iconbtn" data-act="month" data-dir="1" aria-label="Mese successivo">${svg('chevR')}</button></div>`;
 const yearNav = () => `<div class="monthnav"><button class="iconbtn" data-act="year" data-dir="-1" aria-label="Anno precedente">${svg('chevL')}</button><span class="m">${fYear}</span><button class="iconbtn" data-act="year" data-dir="1" aria-label="Anno successivo">${svg('chevR')}</button></div>`;
 const emptyState = msg => `<div class="empty">${escapeHtml(msg)}</div>`;
 
@@ -621,9 +648,9 @@ function viewPrevisionale(){
   </section>`;
 }
 
-const startYM = () => (BUDGET.startDate && BUDGET.startDate.length>=7) ? BUDGET.startDate.slice(0,7) : null;
+const startYM = () => (BUDGET.startDate && BUDGET.startDate.length>=10) ? periodOf(BUDGET.startDate) : null;
 const beforeStart = ym => { const s=startYM(); return s ? ym < s : false; };
-const isStartMonth = ym => { const s=startYM(); return !!s && ym===s && (+BUDGET.startDate.slice(8,10)||1) > 1; };
+const isStartMonth = ym => { const s=startYM(); return !!s && ym===s && BUDGET.startDate > periodRange(ym).startISO; };
 function plannedBudgetMonth(ym){
   const yy=+ym.slice(0,4), mi=+ym.slice(5,7)-1; let inc=0, needs=0, wants=0;
   DATA.forecast.forEach(it=>{ const v=fcMonthly(it,yy,mi); if(v<=0) return;
@@ -868,7 +895,15 @@ function viewPatrimonio(){
 
   <section class="card">
     <div class="card-h"><h3 class="card-title">Andamento</h3><button class="btn ghost sm" data-act="snapshot">${svg('camera')} Fotografia</button></div>
-    ${series.length>=2?lineChart(series,{color:'#3E6B63'}):emptyState('Salva una "Fotografia" ogni tanto (es. a fine mese) per vedere come cambia il patrimonio nel tempo.')}
+    ${(()=>{ const d=lastSnapDelta(); if(!d) return '';
+      return `<div class="snap-delta">
+        <div class="snap-k">Risparmio reale · ultime due fotografie</div>
+        <div class="snap-v ${d.diff>=0?'pos':'neg'}">${signed(d.diff)}</div>
+        <div class="muted sm">${dayShort2(d.prev.date)} → ${dayShort2(d.last.date)} · ${d.days} giorni · ≈ ${eur(d.perMonth)}/mese</div>
+      </div>
+      <p class="hint" style="margin-top:0">Variazione del patrimonio netto tra le due fotografie: è il risparmio effettivo del periodo (dai saldi reali), a meno di rivalutazioni di beni o investimenti fatte nel frattempo.</p>`; })()}
+    ${series.length>=2?lineChart(series,{color:'#3E6B63'}):emptyState('Salva una "Fotografia" a ogni busta paga: la differenza tra due fotografie è il risparmio reale del periodo, senza margine d\u2019errore.')}
+    ${(cycleDay()>1 && (+todayISO().slice(8,10))===cycleDay() && !DATA.snapshots.some(s=>s.date===todayISO())) ? `<p class="hint" style="margin-top:8px"><b>È il giorno della busta paga:</b> salva una fotografia per fissare il risparmio del periodo appena chiuso.</p>` : ''}
   </section>`;
 }
 
@@ -915,7 +950,8 @@ function viewImpostazioni(){
     <div class="card-h"><h3 class="card-title">Dati</h3></div>
     <button class="btn ghost block" data-act="export">${svg('download')} Esporta tutto (JSON)</button>
     <label class="field" style="margin-top:12px"><span>Inizio monitoraggio (giorno 0)</span><input id="cfg-start" type="date" data-act="startdate-set" value="${BUDGET.startDate||''}"></label>
-    <p class="hint" style="margin-top:2px">Da questa data l'app considera i dati validi. I mesi precedenti restano fuori dai grafici; il mese di partenza viene segnalato come parziale (così lo stipendio accreditato non gonfia il risparmio iniziale).</p>
+    <label class="field" style="margin-top:8px"><span>Giorno di inizio ciclo (busta paga)</span><input id="cfg-cycle" type="number" inputmode="numeric" min="1" max="28" data-act="cycle-set" value="${cycleDay()}"></label>
+    <p class="hint" style="margin-top:2px">Metti il giorno in cui arriva lo stipendio (es. 27): il "mese" diventa il tuo ciclo di paga (27→26), così ogni periodo contiene una busta all'inizio e chiude con un risparmio certo. Lascia 1 per il mese solare. Il giorno 0 esclude i periodi precedenti dai grafici e segnala come parziale quello iniziale.</p>
     <button class="btn ghost block" data-act="import" style="margin-top:8px">${svg('upload')} Importa / Ripristina (JSON)</button>
     <button class="btn ghost block" data-act="dedup" style="margin-top:8px">${svg('check')} Rimuovi duplicati (ripara import)</button>
     <p class="hint" style="margin-top:8px">L'importazione aggiunge i dati del file a quelli presenti; gli elementi con lo stesso identificativo vengono aggiornati, non duplicati. Utile per recuperare i dati da una vecchia installazione: esporta là, importa qui.</p>
@@ -1913,6 +1949,13 @@ function onChange(e){
   }
   else if(act==='startdate-set'){
     BUDGET={ ...BUDGET, startDate:e.target.value||'' };
+    if(store.saveConfig) store.saveConfig('budget', BUDGET);
+    render();
+  }
+  else if(act==='cycle-set'){
+    let d=parseInt(e.target.value,10); if(!isFinite(d)) d=1; d=Math.max(1,Math.min(28,d));
+    BUDGET={ ...BUDGET, cycleDay:d };
+    fMonth=periodOf(todayISO()); // re-sync current period with the new cycle
     if(store.saveConfig) store.saveConfig('budget', BUDGET);
     render();
   }
