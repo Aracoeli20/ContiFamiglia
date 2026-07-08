@@ -34,6 +34,22 @@ const TAX_REGIMES = [
   { id:'0',   label:'Esente 0%',             rate:0     }
 ];
 const taxRate = id => (TAX_REGIMES.find(r=>r.id===id)||TAX_REGIMES[0]).rate;
+const INTEREST_FREQS = [
+  { id:'annuale',    m:12, label:'Annuale' },
+  { id:'semestrale', m:6,  label:'Semestrale' },
+  { id:'trimestrale',m:3,  label:'Trimestrale' },
+  { id:'mensile',    m:1,  label:'Mensile' }
+];
+const freqMonths = id => (INTEREST_FREQS.find(f=>f.id===id)||INTEREST_FREQS[0]).m;
+function interestEstimate(a, balance){
+  const rate=+a.interestRate||0; if(rate<=0) return null;
+  const m=freqMonths(a.interestFreq||'annuale'); const tr=taxRate(a.taxRegime||'26');
+  const annualGross=Math.round(balance*rate/100*100)/100;
+  const periodGross=Math.round(balance*rate/100*(m/12)*100)/100;
+  return { rate, months:m, freq:a.interestFreq||'annuale', taxPct:Math.round(tr*100),
+    periodGross, periodTax:Math.round(periodGross*tr*100)/100, periodNet:Math.round(periodGross*(1-tr)*100)/100,
+    annualGross, annualNet:Math.round(annualGross*(1-tr)*100)/100 };
+}
 const FC_KINDS = {
   ricorrente:     { label:'Ricorrente',    hint:'Importo fisso su uno o più mesi (mutuo, utenze, condominio…).' },
   rata:           { label:'Rata / finanziamento', hint:'Numero di rate da un mese di partenza, anche a cavallo d\u2019anno. Genera una passività che cala da sola.' },
@@ -74,6 +90,7 @@ const monthAbbr = ym => MESI_AB[+ym.slice(5,7)-1];
 const dayLabel = iso => { const [y,m,d]=iso.split('-'); return `${+d} ${MESI[+m-1].toLowerCase()} ${y}`; };
 const dayShort = iso => { const p=(iso||'').split('-'); return p.length===3?`${+p[2]}/${+p[1]}`:''; };
 const dueLabel = days => days<0?`scaduta ${-days}g fa`:(days===0?'oggi':(days===1?'domani':`tra ${days} giorni`));
+const dayShort2 = iso => { const p=(iso||'').split('-'); return p.length===3?`${+p[2]}/${+p[1]}/${p[0]}`:''; };
 const escapeHtml = s => String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const firstName = n => String(n||'').trim().split(/\s+/)[0] || 'Utente';
 const parseAmount = v => { const n=parseFloat(String(v==null?'':v).replace(/\s/g,'').replace(',','.')); return isNaN(n)?NaN:n; };
@@ -123,7 +140,8 @@ const svg = (k,cls='ic') => `<svg viewBox="0 0 24 24" class="${cls}" fill="none"
 /* ===================== Stato ===================== */
 let store=null, me=null, deferredPrompt=null;
 const DATA = { transactions:[], assets:[], snapshots:[], members:[], accounts:[], forecast:[], goals:[], categories:DEFAULT_CATEGORIES };
-let BUDGET = { needs:50, wants:30, save:20 };
+let BUDGET = { needs:50, wants:30, save:20, startDate:'' };
+let budgetSource='preventivo';
 const NEEDS_MACROS = ['incomprimibili','oggettive'];
 let catSeeded=false, accountsSeeded=false, fcSeeded=false, budgetSeeded=false;
 const subs={};
@@ -168,7 +186,7 @@ function ensureData(){
   });
   subs.gl = store.subscribe('goals', a=>{ DATA.goals=[...a].sort((x,y)=>(x.order||0)-(y.order||0)); softRender(); });
   subs.bd = store.subscribeConfig ? store.subscribeConfig('budget', o=>{
-    if(o && isFinite(+o.needs)){ BUDGET={ needs:+o.needs, wants:+o.wants, save:+o.save }; }
+    if(o && isFinite(+o.needs)){ BUDGET={ needs:+o.needs, wants:+o.wants, save:+o.save, startDate:o.startDate||'' }; }
     else if(!budgetSeeded){ budgetSeeded=true; store.saveConfig && store.saveConfig('budget', BUDGET); }
     softRender();
   }) : null;
@@ -603,11 +621,25 @@ function viewPrevisionale(){
   </section>`;
 }
 
-function budgetCard(list, ent, usc){
+const startYM = () => (BUDGET.startDate && BUDGET.startDate.length>=7) ? BUDGET.startDate.slice(0,7) : null;
+const beforeStart = ym => { const s=startYM(); return s ? ym < s : false; };
+const isStartMonth = ym => { const s=startYM(); return !!s && ym===s && (+BUDGET.startDate.slice(8,10)||1) > 1; };
+function plannedBudgetMonth(ym){
+  const yy=+ym.slice(0,4), mi=+ym.slice(5,7)-1; let inc=0, needs=0, wants=0;
+  DATA.forecast.forEach(it=>{ const v=fcMonthly(it,yy,mi); if(v<=0) return;
+    if(it.flow==='entrata') inc+=v; else if(it.macro==='superflue') wants+=v; else needs+=v; });
+  return { inc:Math.round(inc*100)/100, needs:Math.round(needs*100)/100, wants:Math.round(wants*100)/100 };
+}
+function budgetCard(list, entReal, uscReal){
   const p=BUDGET; const sumP=Math.round((+p.needs||0)+(+p.wants||0)+(+p.save||0));
-  const needsA=Math.round(sum(list.filter(t=>countsExpense(t)&&NEEDS_MACROS.includes(t.macro)).map(t=>t.amount))*100)/100;
-  const wantsA=Math.round(sum(list.filter(t=>countsExpense(t)&&t.macro==='superflue').map(t=>t.amount))*100)/100;
-  const saveA=Math.round((ent-usc)*100)/100;
+  const realNeeds=Math.round(sum(list.filter(t=>countsExpense(t)&&NEEDS_MACROS.includes(t.macro)).map(t=>t.amount))*100)/100;
+  const realWants=Math.round(sum(list.filter(t=>countsExpense(t)&&t.macro==='superflue').map(t=>t.amount))*100)/100;
+  const plan=plannedBudgetMonth(fMonth);
+  const usePrev = budgetSource==='preventivo';
+  const ent = usePrev ? plan.inc : entReal;
+  const needsA = usePrev ? plan.needs : realNeeds;
+  const wantsA = usePrev ? plan.wants : realWants;
+  const saveA = Math.round((ent-needsA-wantsA)*100)/100;
   const tN=Math.round(ent*(+p.needs||0))/100, tW=Math.round(ent*(+p.wants||0))/100, tS=Math.round(ent*(+p.save||0))/100;
   const pctIn=(id,val,lab)=>`<label class="b532-in"><span>${lab}</span><span class="b532-box"><input id="${id}" data-act="budget-set" type="number" inputmode="numeric" min="0" max="100" value="${Math.round(+val||0)}"><span class="b532-pc">%</span></span></label>`;
   const row=(lab,color,target,actual,isSave)=>{
@@ -631,12 +663,17 @@ function budgetCard(list, ent, usc){
       const parts=[];
       if(overW>0) parts.push(`lo svago supera la sua quota di ${eur(overW)}`);
       if(overN>0) parts.push(`le necessità di ${eur(overN)}`);
-      advice=`Mancano ${eur(deficit)} all'obiettivo di risparmio${parts.length?` — ${parts.join(' e ')}`:''}.`;
-    } else advice=`Obiettivo di risparmio centrato: ${eur(saveA)}${(-deficit)>0?` (${eur(-deficit)} oltre il target)`:''}.`;
+      advice=`Margine di risparmio ${eur(saveA)} — sotto l'obiettivo di ${eur(deficit)}${parts.length?` (${parts.join(' e ')})`:''}.`;
+    } else advice=`Margine di risparmio ${eur(saveA)} — obiettivo centrato${(-deficit)>0?` (${eur(-deficit)} oltre)`:''}.`;
   }
+  const seg=(id,lab)=>`<button class="seg-btn${budgetSource===id?' on':''}" data-act="budget-src" data-src="${id}">${lab}</button>`;
+  const srcNote = usePrev
+    ? 'Entrate e spese dal Previsionale del mese: è il margine di risparmio pianificato.'
+    : 'Entrate e spese realmente registrate nel mese.';
   return `
   <section class="card">
-    <div class="card-h"><h3 class="card-title">Regola ${Math.round(+p.needs||0)}/${Math.round(+p.wants||0)}/${Math.round(+p.save||0)}</h3><span class="muted sm">entrate ${eur(ent)}</span></div>
+    <div class="card-h"><h3 class="card-title">Regola ${Math.round(+p.needs||0)}/${Math.round(+p.wants||0)}/${Math.round(+p.save||0)}</h3><span class="muted sm">${usePrev?'preventivo':'reale'} · entrate ${eur(ent)}</span></div>
+    <div class="seg" style="margin:2px 0 10px">${seg('preventivo','Preventivo')}${seg('reale','Reale')}</div>
     ${ent>0?`
     <div class="b532-ins">${pctIn('bg-needs',p.needs,'Necessità')}${pctIn('bg-wants',p.wants,'Svago')}${pctIn('bg-save',p.save,'Risparmio')}</div>
     ${sumP!==100?`<div class="calc-row warn" style="margin:2px 0 6px"><span>Le percentuali sommano a ${sumP}, non a 100.</span></div>`:''}
@@ -644,8 +681,8 @@ function budgetCard(list, ent, usc){
     ${row('Svago e hobby','#C2A36A',tW,wantsA,false)}
     ${row('Risparmio','#3E6B63',tS,saveA,true)}
     ${advice?`<p class="hint" style="margin-top:8px">${advice}</p>`:''}
-    <p class="hint">Necessità = fasce Incomprimibili + Oggettive · Svago = Superflue · Risparmio = entrate − uscite del mese. Cambia le percentuali e le quote si ricalcolano.</p>
-    `:emptyState('Nessuna entrata nel mese: registra le entrate per calcolare le quote.')}
+    <p class="hint">${srcNote} Necessità = Incomprimibili+Oggettive · Svago = Superflue. Cambia le percentuali e le quote si ricalcolano.</p>
+    `:emptyState(usePrev?'Nel Previsionale non ci sono entrate per questo mese: aggiungile come voci "Entrata".':'Nessuna entrata registrata nel mese.')}
   </section>`;
 }
 
@@ -700,10 +737,15 @@ function viewDelta(){
   const macroBars = MACROS.map(m=>({ label:`${m.label}${usc>0?' · '+Math.round(per[m.key]/usc*100)+'%':''}`, value:per[m.key], color:m.color }));
   const pp={}; list.filter(countsExpense).forEach(t=>{ pp[t.paidBy]=(pp[t.paidBy]||0)+(+t.amount||0); });
   const personBars = Object.keys(pp).map(uid=>{ const mm=memberById(uid); return { label:mm?firstName(mm.name):'—', value:pp[uid], color:mm?mm.color:'#999' }; }).sort((a,b)=>b.value-a.value);
-  const months=[]; for(let i=7;i>=0;i--) months.push(shiftMonth(curMonth(),-i));
+  const months=[]; for(let i=7;i>=0;i--){ const ym=shiftMonth(curMonth(),-i); if(!beforeStart(ym)) months.push(ym); }
   const series = months.map(ym=>{ const l=txMonth(ym); const e=sum(l.filter(countsIncome).map(t=>t.amount)); const u=sum(l.filter(countsExpense).map(t=>t.amount)); return { label:monthAbbr(ym), value:e-u }; });
   const euSeries = months.map(ym=>{ const l=txMonth(ym); return { label:monthAbbr(ym), entrate:sum(l.filter(countsIncome).map(t=>t.amount)), uscite:sum(l.filter(countsExpense).map(t=>t.amount)) }; });
   const hasEU = euSeries.some(s=>s.entrate>0||s.uscite>0);
+  const pre = beforeStart(fMonth);
+  const partial = isStartMonth(fMonth);
+  const startNote = pre
+    ? `<div class="daynote warn">Mese precedente all'inizio del monitoraggio (${dayShort2(BUDGET.startDate)}): i dati potrebbero essere incompleti.</div>`
+    : (partial ? `<div class="daynote">Mese parziale: monitoraggio iniziato il ${dayShort2(BUDGET.startDate)}. Il risparmio del mese può risultare falsato (es. stipendio accreditato con poche spese registrate).</div>` : '');
   return `
   ${monthNav()}
   <section class="card center">
@@ -711,11 +753,12 @@ function viewDelta(){
     <div class="big-v ${delta>=0?'pos':'neg'}">${signed(delta)}</div>
     <div class="muted">${delta>=0?'Risparmio del mese':'Avete speso più di quanto entrato'}</div>
   </section>
+  ${startNote}
   ${budgetCard(list, ent, usc)}
-  <section class="card"><div class="card-h"><h3 class="card-title">Entrate e uscite</h3><span class="muted sm">ultimi 8 mesi</span></div>${hasEU?groupedBars(euSeries):emptyState('Dati insufficienti per il grafico.')}</section>
+  <section class="card"><div class="card-h"><h3 class="card-title">Entrate e uscite</h3><span class="muted sm">${months.length} mesi</span></div>${hasEU?groupedBars(euSeries):emptyState('Dati insufficienti per il grafico.')}</section>
   <section class="card"><div class="card-h"><h3 class="card-title">Per macroarea</h3></div>${usc>0?barsH(macroBars):emptyState('Nessuna uscita nel mese.')}</section>
   <section class="card"><div class="card-h"><h3 class="card-title">Chi ha speso</h3></div>${personBars.length?barsH(personBars):emptyState('Nessuna uscita nel mese.')}</section>
-  <section class="card"><div class="card-h"><h3 class="card-title">Andamento del delta</h3><span class="muted sm">ultimi 8 mesi</span></div>${lineChart(series)}</section>
+  <section class="card"><div class="card-h"><h3 class="card-title">Andamento del delta</h3><span class="muted sm">${months.length} mesi</span></div>${lineChart(series)}</section>
   `;
 }
 
@@ -871,6 +914,8 @@ function viewImpostazioni(){
   <section class="card">
     <div class="card-h"><h3 class="card-title">Dati</h3></div>
     <button class="btn ghost block" data-act="export">${svg('download')} Esporta tutto (JSON)</button>
+    <label class="field" style="margin-top:12px"><span>Inizio monitoraggio (giorno 0)</span><input id="cfg-start" type="date" data-act="startdate-set" value="${BUDGET.startDate||''}"></label>
+    <p class="hint" style="margin-top:2px">Da questa data l'app considera i dati validi. I mesi precedenti restano fuori dai grafici; il mese di partenza viene segnalato come parziale (così lo stipendio accreditato non gonfia il risparmio iniziale).</p>
     <button class="btn ghost block" data-act="import" style="margin-top:8px">${svg('upload')} Importa / Ripristina (JSON)</button>
     <button class="btn ghost block" data-act="dedup" style="margin-top:8px">${svg('check')} Rimuovi duplicati (ripara import)</button>
     <p class="hint" style="margin-top:8px">L'importazione aggiunge i dati del file a quelli presenti; gli elementi con lo stesso identificativo vengono aggiornati, non duplicati. Utile per recuperare i dati da una vecchia installazione: esporta là, importa qui.</p>
@@ -1012,6 +1057,12 @@ function openAccountSheet(id){
   const isCard=a.kind==='carta';
   const recent = DATA.transactions.filter(t=>t.account===id||t.fromAccount===id||t.toAccount===id).slice(0,6);
   const cardInfo = isCard ? `<div class="net-split" style="margin:-4px 0 10px"><span>Utilizzo mese ${eur(cardUsageMonth(id))}</span>${a.billingDay?`<span>Addebito il ${a.billingDay}</span>`:''}${a.linkedAccount&&accountById(a.linkedAccount)?`<span>Salda da ${escapeHtml(accountById(a.linkedAccount).name)}</span>`:''}</div>` : '';
+  const iEst = !isCard ? interestEstimate(a, bal) : null;
+  const interestInfo = iEst ? `<div class="fc-calc" style="margin:-2px 0 10px">
+      <div class="calc-row"><span>Interessi ${iEst.freq} (stima su ${eur(bal)})</span><b>${eur(iEst.periodGross)} lordi</b></div>
+      <div class="calc-row"><span>Ritenuta ${iEst.taxPct}% → netto</span><b>${eur(iEst.periodNet)}</b></div>
+      <div class="calc-row"><span>Stima annua netta</span><b>${eur(iEst.annualNet)}</b></div>
+    </div>` : '';
   const balLabel = isCard ? '<span class="kind-tag">Da saldare</span>' : `<span class="kind-tag">${km.label}</span>${a.locked?' · vincolato':''}`;
   const actions = isCard
     ? `<div class="acc-actions">
@@ -1026,12 +1077,13 @@ function openAccountSheet(id){
         <button class="btn ghost" data-act="acc-transfer" data-id="${id}">${svg('transfer')} Giroconto</button>
         <button class="btn ghost" data-act="acc-recon" data-id="${id}">${svg('scale')} Concilia</button>
       </div>
-      <button class="btn ghost block" data-act="acc-interest" data-id="${id}" style="margin-top:8px">${svg('percent')} Registra interessi</button>`;
+      <button class="btn ghost block" data-act="acc-interest" data-id="${id}" style="margin-top:8px">${svg('percent')} ${iEst?'Registra interessi maturati':'Registra interessi'}</button>`;
   openSheet(`
     <div class="sheet-h"><h3 class="sheet-title">${escapeHtml(a.name)}</h3><button class="iconbtn" data-act="sheet-close" aria-label="Chiudi">${svg('x')}</button></div>
     <div class="sheet-body">
       <div class="acc-balance">${balLabel}<div class="acc-bal-v ${bal<0?'neg':''}">${eur(bal)}</div></div>
       ${cardInfo}
+      ${interestInfo}
       ${actions}
       <button class="btn ghost block" data-act="acc-edit" data-id="${id}" style="margin-top:8px">${svg('pencil')} Modifica conto</button>
       ${recent.length?`<div class="card-h" style="margin:14px 0 8px"><h3 class="card-title" style="font-size:1.1rem">Ultimi movimenti</h3></div><div class="list">${recent.map(rowTx).join('')}</div>`:''}
@@ -1042,16 +1094,19 @@ function openAccountSheet(id){
 function openInterest(id){
   const a=accountById(id); if(!a) return; opAccId=id;
   const reg=a.taxRegime||'26';
+  const bal=computeBalances()[id]||0; const est=interestEstimate(a,bal);
+  const preGross = est ? String(est.periodGross).replace('.',',') : '';
+  const preHint = est ? `Precompilato con la stima ${est.freq} sul saldo attuale (${eur(bal)} × ${String(est.rate).replace('.',',')}%). Correggi con l'importo reale della banca.` : `L'app accredita il <b>netto</b> sul conto come entrata "Interessi e rendite". BOT/BTP: 12,5%. Conti e depositi: 26%.`;
   openSheet(`
     <div class="sheet-h"><h3 class="sheet-title">Interessi · ${escapeHtml(a.name)}</h3><button class="iconbtn" data-act="sheet-close" aria-label="Chiudi">${svg('x')}</button></div>
     <div class="sheet-body">
-      <label class="field"><span>Interesse lordo (€)</span><input id="int-gross" data-act="int-calc" inputmode="decimal" placeholder="0,00"></label>
+      <label class="field"><span>Interesse lordo (€)</span><input id="int-gross" data-act="int-calc" inputmode="decimal" placeholder="0,00" value="${preGross}"></label>
       <label class="field"><span>Tassazione</span><select id="int-reg" data-act="int-calc">${TAX_REGIMES.map(r=>`<option value="${r.id}" ${r.id===reg?'selected':''}>${r.label}</option>`).join('')}</select></label>
       <div id="int-calc-box" class="fc-calc"></div>
       <label class="field"><span>Data</span><input id="int-date" type="date" value="${todayISO()}"></label>
       <div class="sheet-error" id="int-err"></div>
       <div class="sheet-actions"><button class="btn primary grow" data-act="int-save" data-id="${id}">${svg('check')} Accredita netto</button></div>
-      <p class="hint" style="margin-top:0">L'app accredita il <b>netto</b> sul conto come entrata "Interessi e rendite". BOT/BTP: 12,5%. Conti e depositi: 26%.</p>
+      <p class="hint" style="margin-top:0">${preHint}</p>
     </div>`);
   updateInterestCalc();
 }
@@ -1183,15 +1238,16 @@ async function saveRecon(id){
 /* ===================== Modale: Conto (nuovo / modifica) ===================== */
 function openAccountEdit(a){
   accEditId = a?a.id:null;
-  const d = a ? { name:a.name, kind:a.kind||'corrente', opening:a.opening, exclude:!!a.excludeNetWorth, locked:!!a.locked, taxRegime:a.taxRegime||'26', billingDay:a.billingDay||'', linkedAccount:a.linkedAccount||'', note:a.note||'' }
-              : { name:'', kind:'corrente', opening:'', exclude:false, locked:false, taxRegime:'26', billingDay:'', linkedAccount:'', note:'' };
+  const d = a ? { name:a.name, kind:a.kind||'corrente', opening:a.opening, exclude:!!a.excludeNetWorth, locked:!!a.locked, taxRegime:a.taxRegime||'26', interestRate:(a.interestRate!=null?a.interestRate:''), interestFreq:a.interestFreq||'annuale', billingDay:a.billingDay||'', linkedAccount:a.linkedAccount||'', note:a.note||'' }
+              : { name:'', kind:'corrente', opening:'', exclude:false, locked:false, taxRegime:'26', interestRate:'', interestFreq:'annuale', billingDay:'', linkedAccount:'', note:'' };
   renderAccountSheet(d);
 }
 function readAccountDraft(){
   const v=id=>{ const e=el(id); return e?e.value:''; };
   return { name:v('ae-name'), kind:v('ae-kind')||'corrente', opening:v('ae-opening'),
     exclude: el('ae-exclude')?el('ae-exclude').checked:false, locked: el('ae-locked')?el('ae-locked').checked:false,
-    taxRegime:v('ae-tax')||'26', billingDay:v('ae-billday'), linkedAccount:v('ae-linked'), note:v('ae-note') };
+    taxRegime:v('ae-tax')||'26', interestRate:v('ae-irate'), interestFreq:v('ae-ifreq')||'annuale',
+    billingDay:v('ae-billday'), linkedAccount:v('ae-linked'), note:v('ae-note') };
 }
 function renderAccountSheet(d){
   const openingVal = (d.opening!==''&&d.opening!=null) ? String(d.opening).replace('.',',') : '';
@@ -1202,7 +1258,11 @@ function renderAccountSheet(d){
         <label class="field"><span>Conto di pagamento</span><select id="ae-linked">${accountOptions(d.linkedAccount,true)}</select></label>
       </div>
       <p class="hint" style="margin-top:0">Le spese sulla carta sono uscite normali sul conto-carta; "Salda" gira il dovuto dal conto di pagamento. L'utilizzo del mese si azzera il 1°.</p>` : '';
-  const taxBlock = (!isCard) ? `<label class="field"><span>Tassazione interessi</span><select id="ae-tax">${TAX_REGIMES.map(r=>`<option value="${r.id}" ${r.id===d.taxRegime?'selected':''}>${r.label}</option>`).join('')}</select></label>` : '';
+  const taxBlock = (!isCard) ? `<div class="filters three">
+        <label class="field"><span>Tasso creditore % annuo</span><input id="ae-irate" inputmode="decimal" value="${(d.interestRate!==''&&d.interestRate!=null)?String(d.interestRate).replace('.',','):''}" placeholder="es. 2,5"></label>
+        <label class="field"><span>Liquidazione</span><select id="ae-ifreq">${INTEREST_FREQS.map(fr=>`<option value="${fr.id}" ${fr.id===(d.interestFreq||'annuale')?'selected':''}>${fr.label}</option>`).join('')}</select></label>
+        <label class="field"><span>Ritenuta</span><select id="ae-tax">${TAX_REGIMES.map(r=>`<option value="${r.id}" ${r.id===d.taxRegime?'selected':''}>${r.id==='125'?'12,5%':(r.id==='26'?'26%':'0%')}</option>`).join('')}</select></label>
+      </div>` : '';
   const lockBlock = (!isCard) ? `<label class="check"><input type="checkbox" id="ae-locked" ${d.locked?'checked':''}><span>Conto vincolato (es. pensione) — non conta nella liquidità disponibile</span></label>` : '';
   openSheet(`
     <div class="sheet-h"><h3 class="sheet-title">${accEditId?'Modifica conto':'Nuovo conto'}</h3><button class="iconbtn" data-act="sheet-close" aria-label="Chiudi">${svg('x')}</button></div>
@@ -1231,6 +1291,8 @@ async function saveAccount(){
   const isCard=d.kind==='carta';
   const rec={ name, kind:d.kind, opening:isNaN(opening)?0:Math.round(opening*100)/100, excludeNetWorth:!!d.exclude,
     locked: isCard?false:!!d.locked, taxRegime: isCard?'0':(d.taxRegime||'26'),
+    interestRate: isCard?0:(parseAmount(d.interestRate)>0?Math.round(parseAmount(d.interestRate)*1000)/1000:0),
+    interestFreq: isCard?'annuale':(d.interestFreq||'annuale'),
     billingDay: isCard?(d.billingDay?Math.max(1,Math.min(28,parseInt(d.billingDay,10)||1)):null):null,
     linkedAccount: isCard?(d.linkedAccount||''):'', note:(d.note||'').trim() };
   try{
@@ -1816,6 +1878,7 @@ function onClick(e){
     case 'goal-edit': { const g=DATA.goals.find(x=>x.id===ds.id); if(g) openGoal(g); break; }
     case 'goal-save': saveGoal(); break;
     case 'goal-delete': deleteGoal(ds.id); break;
+    case 'budget-src': budgetSource = (ds.src==='reale'?'reale':'preventivo'); render(); break;
     case 'install': doInstall(); break;
     case 'cat-add': catAdd(ds.group); break;
     case 'cat-del': catDel(ds.group, ds.name); break;
@@ -1844,7 +1907,12 @@ function onChange(e){
     const n=Math.max(0,Math.min(100,+((el('bg-needs')||{}).value)||0));
     const w=Math.max(0,Math.min(100,+((el('bg-wants')||{}).value)||0));
     const s=Math.max(0,Math.min(100,+((el('bg-save')||{}).value)||0));
-    BUDGET={ needs:n, wants:w, save:s };
+    BUDGET={ ...BUDGET, needs:n, wants:w, save:s };
+    if(store.saveConfig) store.saveConfig('budget', BUDGET);
+    render();
+  }
+  else if(act==='startdate-set'){
+    BUDGET={ ...BUDGET, startDate:e.target.value||'' };
     if(store.saveConfig) store.saveConfig('budget', BUDGET);
     render();
   }
