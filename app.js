@@ -329,14 +329,21 @@ function goalStats(g){
   }
   return { bal, target, remaining, pct, monthsToDue, quotaFromDue, duePast, monthly, monthsFromMonthly, etaY, etaM };
 }
-function lastSnapDelta(){
+function snapBridge(){
   const s=[...DATA.snapshots].filter(x=>x.date).sort((a,b)=>a.date.localeCompare(b.date));
   if(s.length<2) return null;
   const prev=s[s.length-2], last=s[s.length-1];
-  const diff=Math.round(((+last.netto||0)-(+prev.netto||0))*100)/100;
+  const inWin = t => t.date && t.date>prev.date && t.date<=last.date && !isMemoAcc(t.account);
+  const win = DATA.transactions.filter(inWin);
+  const pl = Math.round((sum(win.filter(countsIncome).map(t=>t.amount)) - sum(win.filter(countsExpense).map(t=>t.amount)))*100)/100;
+  const rett = Math.round(sum(win.filter(t=>t.type==='rettifica').map(t=>(t.dir==='-'?-1:1)*(+t.amount||0)))*100)/100;
+  const dNW = Math.round(((+last.netto||0)-(+prev.netto||0))*100)/100;
+  const other = Math.round((dNW - pl - rett)*100)/100;
   const days=Math.max(1, Math.round((new Date(last.date+'T00:00:00')-new Date(prev.date+'T00:00:00'))/86400000));
-  const perMonth=Math.round(diff/days*(365/12)*100)/100;
-  return { prev, last, diff, days, perMonth };
+  const perMonth=Math.round(dNW/days*(365/12)*100)/100;
+  const noise=Math.abs(rett)+Math.abs(other);
+  const coherent = noise <= Math.max(15, Math.abs(dNW)*0.02);
+  return { prev, last, days, dNW, pl, rett, other, perMonth, coherent };
 }
 
 function carryStatus(ym){
@@ -894,16 +901,25 @@ function viewPatrimonio(){
   </section>
 
   <section class="card">
-    <div class="card-h"><h3 class="card-title">Andamento</h3><button class="btn ghost sm" data-act="snapshot">${svg('camera')} Fotografia</button></div>
-    ${(()=>{ const d=lastSnapDelta(); if(!d) return '';
+    <div class="card-h"><h3 class="card-title">Andamento e coerenza</h3><button class="btn ghost sm" data-act="snapshot">${svg('camera')} Fotografia</button></div>
+    ${(()=>{ const b=snapBridge(); if(!b) return '';
+      const line=(lab,val,strong)=>`<div class="calc-row"><span>${lab}</span><b class="${val>=0?'':'neg'}${strong?' big':''}">${signed(val)}</b></div>`;
       return `<div class="snap-delta">
-        <div class="snap-k">Risparmio reale · ultime due fotografie</div>
-        <div class="snap-v ${d.diff>=0?'pos':'neg'}">${signed(d.diff)}</div>
-        <div class="muted sm">${dayShort2(d.prev.date)} → ${dayShort2(d.last.date)} · ${d.days} giorni · ≈ ${eur(d.perMonth)}/mese</div>
+        <div class="snap-k">Variazione patrimonio · ultime due fotografie</div>
+        <div class="snap-v ${b.dNW>=0?'pos':'neg'}">${signed(b.dNW)}</div>
+        <div class="muted sm">${dayShort2(b.prev.date)} → ${dayShort2(b.last.date)} · ${b.days} giorni · ≈ ${eur(b.perMonth)}/mese</div>
       </div>
-      <p class="hint" style="margin-top:0">Variazione del patrimonio netto tra le due fotografie: è il risparmio effettivo del periodo (dai saldi reali), a meno di rivalutazioni di beni o investimenti fatte nel frattempo.</p>`; })()}
-    ${series.length>=2?lineChart(series,{color:'#3E6B63'}):emptyState('Salva una "Fotografia" a ogni busta paga: la differenza tra due fotografie è il risparmio reale del periodo, senza margine d\u2019errore.')}
-    ${(cycleDay()>1 && (+todayISO().slice(8,10))===cycleDay() && !DATA.snapshots.some(s=>s.date===todayISO())) ? `<p class="hint" style="margin-top:8px"><b>È il giorno della busta paga:</b> salva una fotografia per fissare il risparmio del periodo appena chiuso.</p>` : ''}
+      <div class="fc-calc" style="margin-top:8px">
+        ${line('Risparmio registrato (entrate − uscite)', b.pl)}
+        ${line('Conciliazioni (scostamenti dalla banca)', b.rett)}
+        ${line('Rivalutazioni / altro', b.other)}
+      </div>
+      <div class="verdict ${b.coherent?'ok':'warn'}">${b.coherent
+        ? svg('check','ic-xs')+' Registro coerente col patrimonio: la variazione è spiegata dai movimenti registrati.'
+        : svg('bell','ic-xs')+` Scostamenti da verificare: ${eur(Math.abs(b.rett))} corretti con conciliazione${Math.abs(b.other)>1?`, ${signed(b.other)} da rivalutazioni o movimenti non registrati`:''}.`}</div>
+      <p class="hint" style="margin-top:8px">Perché il controllo sia affidabile, prima di salvare la fotografia <b>concilia i conti con la banca</b> (tocca il conto → Concilia): così la fotografia riflette i saldi reali e i movimenti dimenticati emergono nella riga "Conciliazioni".</p>`; })()}
+    ${series.length>=2?lineChart(series,{color:'#3E6B63'}):emptyState('Salva una "Fotografia" a ogni busta paga (dopo aver conciliato i conti): la differenza tra due fotografie è il risparmio reale del periodo, e l\u2019app controlla che il registro sia coerente.')}
+    ${(cycleDay()>1 && (+todayISO().slice(8,10))===cycleDay() && !DATA.snapshots.some(s=>s.date===todayISO())) ? `<p class="hint" style="margin-top:8px"><b>È il giorno della busta paga:</b> concilia i conti e salva una fotografia per fissare il risparmio del periodo appena chiuso.</p>` : ''}
   </section>`;
 }
 
@@ -1593,7 +1609,8 @@ async function deleteFcItem(id){
 /* ===================== Azioni varie ===================== */
 async function saveSnapshot(){
   const np=netWorthParts();
-  const rec={ date:todayISO(), attivi:Math.round((np.liquid+np.otherA)*100)/100, passivi:Math.round(np.pass*100)/100, netto:Math.round(np.netto*100)/100 };
+  const rec={ date:todayISO(), attivi:Math.round((np.liquid+np.otherA)*100)/100, passivi:Math.round(np.pass*100)/100, netto:Math.round(np.netto*100)/100,
+    liquid:Math.round(np.liquid*100)/100, otherA:Math.round(np.otherA*100)/100, pass:Math.round(np.pass*100)/100 };
   const existing=DATA.snapshots.find(s=>s.date===rec.date);
   try{ if(existing) await store.update('snapshots', existing.id, rec); else await store.add('snapshots', rec); toast('Fotografia del patrimonio salvata'); }
   catch(e){ console.warn(e); toast('Errore nel salvataggio'); }

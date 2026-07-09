@@ -2,7 +2,7 @@
    App shell: network-first (così un nuovo deploy si vede subito quando sei online,
    e resta disponibile offline). CDN/font: cache-first. I dati Firestore hanno la
    loro cache offline integrata e non passano da qui. */
-const CACHE = 'conti-v3';
+const CACHE = 'conti-v3-6';
 const SHELL = [
   './', './index.html', './style.css', './app.js', './store.js',
   './firebase-config.js', './manifest.json',
@@ -32,9 +32,9 @@ self.addEventListener('fetch', e => {
   if (/firestore|googleapis|identitytoolkit|firebaseio|firebaseinstallations|google-analytics/.test(url.hostname)) return;
 
   if (url.origin === location.origin) {
-    // App shell: rete prima, cache come fallback offline.
+    // App shell: rete prima (rivalidando sempre col server), cache come fallback offline.
     e.respondWith(
-      fetch(req)
+      fetch(req, { cache: 'no-cache' })
         .then(res => { const copy = res.clone(); caches.open(CACHE).then(c => c.put(req, copy)); return res; })
         .catch(() => caches.match(req).then(m => m || caches.match('./index.html')))
     );
