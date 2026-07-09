@@ -167,6 +167,7 @@ let view='cruscotto';
 let fMonth=curMonth(), fPerson='all', fType='all', fAccount='all', fYear=curYear();
 let modalOpen=false, pendingRender=false;
 let sheetType='uscita', movEditId=null, assetEditId=null, accEditId=null, fcEditId=null, goalEditId=null;
+let fixedDetailYm=null; const fxInFlight=new Set(); let backupRan=false;
 let opAccId=null, opMode='debit', gateTab='login';
 
 /* ===================== Boot ===================== */
@@ -218,7 +219,7 @@ async function seedAccounts(){ for(let i=0;i<DEFAULT_ACCOUNTS.length;i++){ const
 async function seedForecast(){ const y=curYear(); for(let i=0;i<DEFAULT_FORECAST.length;i++){ await store.add('forecast',{ name:DEFAULT_FORECAST[i], kind:'ricorrente', group:'', macro:'incomprimibili', sub:'', account:'', year:y, amounts:Array(12).fill(0), cells:{}, order:i }); } }
 function teardownData(){ Object.values(subs).forEach(u=>{ try{ u&&u(); }catch{} }); for(const k in subs) delete subs[k]; }
 function normalizeCats(c){ return { spese:{ incomprimibili:(c&&c.spese&&c.spese.incomprimibili)||[], oggettive:(c&&c.spese&&c.spese.oggettive)||[], superflue:(c&&c.spese&&c.spese.superflue)||[] }, entrate:(c&&c.entrate)||[] }; }
-function softRender(){ if(!me) return; if(modalOpen){ pendingRender=true; return; } render(); }
+function softRender(){ if(!me) return; if(!backupRan && (DATA.accounts.length||DATA.transactions.length)){ backupRan=true; autoBackup(); } if(modalOpen){ pendingRender=true; if(fixedDetailYm){ try{ openFixedDetail(fixedDetailYm); }catch(e){} } return; } render(); }
 
 /* ===================== Calcoli conti / patrimonio ===================== */
 function computeBalances(){
@@ -353,25 +354,31 @@ function carryStatus(ym){
   items.forEach(it=>{ const amt=fcMonthly(it,y,mi); plannedTot+=amt; const key=`${it.id}:${ym}`; if(DATA.transactions.some(t=>t.planKey===key)){ carried++; carriedTot+=amt; } });
   return { plannedCount:items.length, plannedTot:Math.round(plannedTot*100)/100, carried, carriedTot:Math.round(carriedTot*100)/100, todo:items.length-carried, year:y, mi };
 }
-async function materializeMonth(y,mi){
-  const ym=ymOf(y,mi); const items=fcItemsForYear(y).filter(it=>fcMonthly(it,y,mi)>0);
-  let created=0, skipped=0, problems=0;
-  for(const it of items){
-    const amt=Math.round(fcMonthly(it,y,mi)*100)/100; if(amt<=0) continue;
-    const key=`${it.id}:${ym}`;
-    if(DATA.transactions.some(t=>t.planKey===key)){ skipped++; continue; }
-    if(it.flow==='entrata'){
-      await store.add('transactions',{ type:'entrata', amount:amt, date:`${ym}-01`, macro:null, sub:it.sub||it.name, account:it.account||'', paidBy:me.uid, enteredBy:me.uid, note:'Entrata prevista (previsionale)', fixed:true, origin:'previsionale', planKey:key });
-    } else if((it.kind||'ricorrente')==='accantonamento'){
-      const from=it.account||'', to=it.fundAccount||'';
-      if(!from||!to){ problems++; continue; }
-      await store.add('transactions',{ type:'giroconto', amount:amt, date:`${ym}-01`, fromAccount:from, toAccount:to, note:`Accantonamento · ${it.name}`, enteredBy:me.uid, origin:'previsionale', fixed:true, planKey:key });
-    } else {
-      await store.add('transactions',{ type:'uscita', amount:amt, date:`${ym}-01`, macro:it.macro||'incomprimibili', sub:it.sub||it.name, account:it.account||'', paidBy:me.uid, enteredBy:me.uid, note:'Spesa fissa (previsionale)', fixed:true, origin:'previsionale', planKey:key });
-    }
-    created++;
+async function materializeItem(it, y, mi){
+  const ym=ymOf(y,mi); const amt=Math.round(fcMonthly(it,y,mi)*100)/100;
+  if(amt<=0) return 'skip';
+  const key=`${it.id}:${ym}`;
+  if(DATA.transactions.some(t=>t.planKey===key)) return 'skip';
+  if(it.flow==='entrata'){
+    await store.add('transactions',{ type:'entrata', amount:amt, date:`${ym}-01`, macro:null, sub:it.sub||it.name, account:it.account||'', paidBy:me.uid, enteredBy:me.uid, note:'Entrata prevista (previsionale)', fixed:true, origin:'previsionale', planKey:key });
+  } else if((it.kind||'ricorrente')==='accantonamento'){
+    const from=it.account||'', to=it.fundAccount||'';
+    if(!from||!to) return 'problem';
+    await store.add('transactions',{ type:'giroconto', amount:amt, date:`${ym}-01`, fromAccount:from, toAccount:to, note:`Accantonamento · ${it.name}`, enteredBy:me.uid, origin:'previsionale', fixed:true, planKey:key });
+  } else {
+    await store.add('transactions',{ type:'uscita', amount:amt, date:`${ym}-01`, macro:it.macro||'incomprimibili', sub:it.sub||it.name, account:it.account||'', paidBy:me.uid, enteredBy:me.uid, note:'Spesa fissa (previsionale)', fixed:true, origin:'previsionale', planKey:key });
   }
-  if(modalOpen) closeSheet();
+  return 'created';
+}
+async function unmaterializeItem(itemId, ym){
+  const key=`${itemId}:${ym}`; const tx=DATA.transactions.find(t=>t.planKey===key);
+  if(tx){ try{ await store.remove('transactions', tx.id); }catch(e){ console.warn(e); } }
+}
+async function materializeMonth(y,mi){
+  const items=fcItemsForYear(y).filter(it=>fcMonthly(it,y,mi)>0);
+  let created=0, skipped=0, problems=0;
+  for(const it of items){ const r=await materializeItem(it,y,mi); if(r==='created')created++; else if(r==='problem')problems++; else skipped++; }
+  if(modalOpen && !fixedDetailYm) closeSheet();
   let msg = created ? `${created} voci portate nel rendiconto` : 'Niente da portare';
   if(skipped) msg += created ? `, ${skipped} già presenti` : ` (${skipped} già presenti)`;
   if(problems) msg += ` · ${problems} accantonamenti senza conto`;
@@ -452,13 +459,14 @@ function viewCruscotto(){
       <div class="scad-list">${scad.slice(0,3).map(scadenzaRow).join('')}</div>
     </section>` : '';
   const fixedCard = cs.plannedCount>0 ? `
-    <section class="card nudge">
-      <div class="nudge-row"><div><div class="nudge-k">Voci fisse di ${monthName(fMonth).split(' ')[0].toLowerCase()}</div>
-        <div class="nudge-v">${eur(cs.plannedTot)} <span class="muted sm">previste</span></div></div>
-        ${cs.todo>0 ? `<button class="btn primary sm" data-act="fixed-carry" data-year="${cs.year}" data-mi="${cs.mi}">${svg('download')} Porta nel rendiconto</button>` : `<span class="done-tag">${svg('check','ic-xs')} riportate</span>`}
+    <button class="card nudge nudge-btn" data-act="fixed-detail" data-ym="${fMonth}">
+      <div class="nudge-row"><div>
+        <div class="nudge-k">Voci fisse di ${monthName(fMonth).split(' ')[0].toLowerCase()}</div>
+        <div class="nudge-v">${cs.carried} di ${cs.plannedCount} inserite <span class="muted sm">· ${eur(cs.plannedTot)} previste</span></div>
       </div>
-      ${cs.todo>0 && cs.carried>0 ? `<div class="muted sm" style="margin-top:6px">${cs.carried} su ${cs.plannedCount} già riportate</div>` : ''}
-    </section>` : '';
+      ${cs.todo>0 ? `<span class="nudge-cta">${cs.todo} da inserire ${svg('chevR','ic-xs')}</span>` : `<span class="done-tag">${svg('check','ic-xs')} tutte</span>`}
+      </div>
+    </button>` : '';
   return `
   ${monthNav()}
   <section class="card hero">
@@ -963,8 +971,15 @@ function viewImpostazioni(){
   </section>
 
   <section class="card">
-    <div class="card-h"><h3 class="card-title">Dati</h3></div>
-    <button class="btn ghost block" data-act="export">${svg('download')} Esporta tutto (JSON)</button>
+    <div class="card-h"><h3 class="card-title">Dati e backup</h3></div>
+    ${(()=>{ const bi=lastBackupInfo(), ei=lastExportInfo();
+      const bLine = bi ? `Copia automatica: ${bi.days===0?'oggi':(bi.days===1?'ieri':bi.days+' giorni fa')} · ${bi.count} copie sul dispositivo` : 'Copia automatica: si crea al primo avvio con dati';
+      const eStale = !ei || ei.days>14;
+      const eLine = ei ? `Ultima copia scaricata (file): ${ei.days===0?'oggi':ei.days+' giorni fa'}` : 'Nessuna copia scaricata fuori dal telefono';
+      return `<div class="bk-status"><div class="calc-row"><span>${bLine}</span></div><div class="calc-row ${eStale?'warn':''}"><span>${eLine}</span></div></div>
+      ${eStale?`<p class="hint" style="margin-top:2px;color:var(--terra)">Consiglio: scarica ogni tanto una copia e mandala su mail/Drive — è l'unica al sicuro se perdi il telefono.</p>`:''}`; })()}
+    <button class="btn ghost block" data-act="backups" style="margin-top:8px">${svg('camera')} Copie di sicurezza · ripristina</button>
+    <button class="btn ghost block" data-act="export" style="margin-top:8px">${svg('download')} Scarica copia ora (JSON)</button>
     <label class="field" style="margin-top:12px"><span>Inizio monitoraggio (giorno 0)</span><input id="cfg-start" type="date" data-act="startdate-set" value="${BUDGET.startDate||''}"></label>
     <label class="field" style="margin-top:8px"><span>Giorno di inizio ciclo (busta paga)</span><input id="cfg-cycle" type="number" inputmode="numeric" min="1" max="28" data-act="cycle-set" value="${cycleDay()}"></label>
     <p class="hint" style="margin-top:2px">Metti il giorno in cui arriva lo stipendio (es. 27): il "mese" diventa il tuo ciclo di paga (27→26), così ogni periodo contiene una busta all'inizio e chiude con un risparmio certo. Lascia 1 per il mese solare. Il giorno 0 esclude i periodi precedenti dai grafici e segnala come parziale quello iniziale.</p>
@@ -1026,7 +1041,7 @@ function openSheet(html){
   const first=m.querySelector('input,select'); if(first) setTimeout(()=>first.focus(),140);
 }
 function closeSheet(){
-  modalOpen=false; movEditId=null; assetEditId=null; accEditId=null; fcEditId=null;
+  modalOpen=false; movEditId=null; assetEditId=null; accEditId=null; fcEditId=null; goalEditId=null; fixedDetailYm=null;
   el('modal-root').innerHTML='';
   if(pendingRender){ pendingRender=false; render(); }
 }
@@ -1785,6 +1800,32 @@ async function repairDuplicates(){
   }catch(e){ console.warn('repair',e); toast('Errore durante la riparazione. Riprova.'); }
 }
 
+function openFixedDetail(ym){
+  fixedDetailYm=ym;
+  const y=+ym.slice(0,4), mi=+ym.slice(5,7)-1;
+  const items=fcItemsForYear(y).filter(it=>fcMonthly(it,y,mi)>0);
+  const rows=items.map(it=>{
+    const amt=Math.round(fcMonthly(it,y,mi)*100)/100; const key=`${it.id}:${ym}`;
+    const done=DATA.transactions.some(t=>t.planKey===key);
+    const busy=fxInFlight.has(key);
+    const kindTag = it.flow==='entrata'?'entrata':((it.kind==='accantonamento')?'accant.':(it.kind==='rata'?'rata':''));
+    const right = done
+      ? `<span class="fx-done">${svg('check','ic-xs')} inserita</span><button class="btn ghost xs" data-act="fx-undo" data-id="${it.id}" data-ym="${ym}">annulla</button>`
+      : `<button class="btn primary xs" data-act="fx-add" data-id="${it.id}" data-ym="${ym}" ${busy?'disabled':''}>${busy?'…':'Inserisci'}</button>`;
+    const dot = it.flow==='entrata'?'#3E6B63':macro(it.macro).color;
+    return `<div class="fx-row"><span class="row-dot" style="--c:${dot}"></span>
+      <span class="row-main"><span class="row-cat">${escapeHtml(it.name)}${kindTag?` <span class="fc-ktag">${kindTag}</span>`:''}</span><span class="row-meta">${it.flow==='entrata'?'entrata prevista':'spesa fissa'} · ${eur(amt)}</span></span>
+      <span class="row-side">${right}</span></div>`;
+  }).join('');
+  const cs=carryStatus(ym);
+  openSheet(`
+    <div class="sheet-h"><h3 class="sheet-title">Voci fisse · ${monthName(ym)}</h3><button class="iconbtn" data-act="sheet-close" aria-label="Chiudi">${svg('x')}</button></div>
+    <div class="sheet-body">
+      <p class="hint" style="margin-top:0">"Inserisci nel rendiconto" crea il movimento vero nel registro del mese, una volta sola. Qui vedi quali sono già inserite e quali no; puoi inserirle una a una o tutte insieme, e annullare.</p>
+      <div class="fx-list">${rows||emptyState('Nessuna voce fissa per questo mese.')}</div>
+      ${cs.todo>0?`<button class="btn primary block" data-act="fixed-carry" data-year="${cs.year}" data-mi="${cs.mi}" style="margin-top:12px">${svg('download')} Inserisci tutte le mancanti (${cs.todo})</button>`:(items.length?`<div class="done-tag" style="justify-content:center;margin-top:12px">${svg('check','ic-xs')} Tutte inserite</div>`:'')}
+    </div>`);
+}
 function openImport(){
   let inp=el('import-file');
   if(!inp){
@@ -1805,31 +1846,84 @@ async function handleImportFile(e){
   if(!total && !data.categories){ toast('Nel file non ci sono dati da importare'); return; }
   if(!confirm(`Importare ${total} elementi nel database attuale?\nVengono aggiunti a quelli presenti; gli stessi identificativi vengono aggiornati, non duplicati.`)) return;
   toast('Importazione in corso…');
-  const counts={};
   try{
-    for(const c of cols){
-      if(!Array.isArray(data[c])) continue;
-      for(const rec of data[c]){
-        if(!rec || typeof rec!=='object') continue;
-        const { id, ...rest }=rec;
-        if(id!=null && store.set) await store.set(c, id, rest);
-        else await store.add(c, rest);
-        counts[c]=(counts[c]||0)+1;
-      }
-    }
-    if(data.categories && store.saveCategories) await store.saveCategories(data.categories);
-    if(data.budget && store.saveConfig){ const b={ needs:+data.budget.needs||50, wants:+data.budget.wants||30, save:+data.budget.save||20 }; BUDGET=b; await store.saveConfig('budget', b); }
+    const counts=await importData(data);
     if(modalOpen) closeSheet();
     const summary=Object.entries(counts).map(([k,v])=>`${v} ${k}`).join(', ');
     toast(summary?`Importati: ${summary}`:'Categorie importate');
   }catch(err){ console.warn('import',err); toast('Errore durante l\u2019importazione. Riprova.'); }
 }
+async function importData(data){
+  const cols=['members','accounts','transactions','assets','snapshots','forecast','goals'];
+  const counts={};
+  for(const c of cols){
+    if(!Array.isArray(data[c])) continue;
+    for(const rec of data[c]){
+      if(!rec || typeof rec!=='object') continue;
+      const { id, ...rest }=rec;
+      if(id!=null && store.set) await store.set(c, id, rest); else await store.add(c, rest);
+      counts[c]=(counts[c]||0)+1;
+    }
+  }
+  if(data.categories && store.saveCategories) await store.saveCategories(data.categories);
+  if(data.budget && store.saveConfig){ const b={ needs:+data.budget.needs||50, wants:+data.budget.wants||30, save:+data.budget.save||20, startDate:data.budget.startDate||'', cycleDay:+data.budget.cycleDay||1 }; BUDGET=b; await store.saveConfig('budget', b); }
+  return counts;
+}
+function buildBackup(){
+  return { app:'conti-famiglia', version:3, exportedAt:new Date().toISOString(),
+    members:DATA.members, accounts:DATA.accounts, transactions:DATA.transactions,
+    assets:DATA.assets, snapshots:DATA.snapshots, forecast:DATA.forecast, goals:DATA.goals,
+    budget:BUDGET, categories:DATA.categories };
+}
+
+/* ===================== Backup automatico locale ===================== */
+const BK_PREFIX='conti:bk:'; const BK_KEEP=6;
+function localBackups(){
+  const out=[]; try{ for(let i=0;i<localStorage.length;i++){ const k=localStorage.key(i); if(k&&k.indexOf(BK_PREFIX)===0) out.push(k); } }catch(e){}
+  return out.sort().reverse();
+}
+function autoBackup(){
+  try{
+    if(!(DATA.accounts.length||DATA.transactions.length)) return;
+    const keys=localBackups(); const lastKey=keys[0];
+    if(lastKey){ const t=Date.parse(lastKey.slice(BK_PREFIX.length)); if(isFinite(t) && (Date.now()-t)<20*3600*1000) return; }
+    localStorage.setItem(BK_PREFIX+new Date().toISOString(), JSON.stringify(buildBackup()));
+    for(const k of localBackups().slice(BK_KEEP)){ try{ localStorage.removeItem(k); }catch(e){} }
+  }catch(e){ console.warn('autobackup',e); }
+}
+function lastBackupInfo(){ const k=localBackups()[0]; if(!k) return null; const iso=k.slice(BK_PREFIX.length); return { iso, count:localBackups().length, days:Math.floor((Date.now()-Date.parse(iso))/86400000) }; }
+function lastExportInfo(){ try{ const iso=localStorage.getItem('conti:lastexport'); if(!iso) return null; return { iso, days:Math.floor((Date.now()-Date.parse(iso))/86400000) }; }catch(e){ return null; } }
+async function restoreLocalBackup(key){
+  let data; try{ data=JSON.parse(localStorage.getItem(key)||'null'); }catch(e){ toast('Copia illeggibile'); return; }
+  if(!data){ toast('Copia non trovata'); return; }
+  const cols=['members','accounts','transactions','assets','snapshots','forecast','goals'];
+  const total=cols.reduce((s,c)=>s+(Array.isArray(data[c])?data[c].length:0),0);
+  const iso=key.slice(BK_PREFIX.length);
+  if(!confirm(`Ripristinare la copia del ${dayShort2(iso.slice(0,10))} (${total} elementi)?\nViene riscritta sui dati attuali per identificativo (aggiunge/aggiorna, non cancella il resto).`)) return;
+  toast('Ripristino in corso…');
+  try{ await importData(data); if(modalOpen) closeSheet(); toast('Copia ripristinata'); }
+  catch(e){ console.warn('restore',e); toast('Errore nel ripristino'); }
+}
+function openBackups(){
+  const keys=localBackups();
+  const rows = keys.length ? keys.map(k=>{ const iso=k.slice(BK_PREFIX.length); let kb=0; try{ kb=Math.round((localStorage.getItem(k)||'').length/1024); }catch(e){}
+    return `<button class="row" data-act="bk-restore" data-key="${escapeHtml(k)}"><span class="row-main"><span class="row-cat">${dayShort2(iso.slice(0,10))} · ${iso.slice(11,16)}</span><span class="row-meta">copia automatica · ${kb} KB</span></span><span class="row-side">${svg('upload')}</span></button>`;
+  }).join('') : emptyState('Ancora nessuna copia automatica: si crea da sola all\u2019avvio, una volta al giorno.');
+  openSheet(`
+    <div class="sheet-h"><h3 class="sheet-title">Copie di sicurezza</h3><button class="iconbtn" data-act="sheet-close" aria-label="Chiudi">${svg('x')}</button></div>
+    <div class="sheet-body">
+      <p class="hint" style="margin-top:0">Copie automatiche salvate su <b>questo dispositivo</b> (le ultime ${BK_KEEP}). Toccane una per ripristinarla. Per una copia al sicuro <b>fuori dal telefono</b>, usa "Scarica copia" e mandala su mail/Drive.</p>
+      <div class="list">${rows}</div>
+      <button class="btn ghost block" data-act="export" style="margin-top:12px">${svg('download')} Scarica copia (file)</button>
+    </div>`);
+}
 function exportJSON(){
-  const data={ app:'conti-famiglia', version:3, exportedAt:new Date().toISOString(), members:DATA.members, accounts:DATA.accounts, transactions:DATA.transactions, assets:DATA.assets, snapshots:DATA.snapshots, forecast:DATA.forecast, goals:DATA.goals, budget:BUDGET, categories:DATA.categories };
+  const data=buildBackup();
   const blob=new Blob([JSON.stringify(data,null,2)],{ type:'application/json' });
   const url=URL.createObjectURL(blob); const a=document.createElement('a');
   a.href=url; a.download=`conti-famiglia-${todayISO()}.json`; document.body.appendChild(a); a.click(); a.remove();
   setTimeout(()=>URL.revokeObjectURL(url),2000);
+  try{ localStorage.setItem('conti:lastexport', new Date().toISOString()); }catch(e){}
 }
 async function catAdd(group){
   const inp=el('catin-'+group); if(!inp) return; const name=inp.value.trim(); if(!name) return;
@@ -1920,6 +2014,22 @@ function onClick(e){
     case 'fc-delete': deleteFcItem(ds.id); break;
     case 'fc-carry-pick': { const mi=parseInt(el('carry-month')?el('carry-month').value:'0',10)||0; materializeMonth(parseInt(ds.year,10), mi); break; }
     case 'fixed-carry': materializeMonth(parseInt(ds.year,10), parseInt(ds.mi,10)); break;
+    case 'fixed-detail': openFixedDetail(ds.ym); break;
+    case 'fx-add': {
+      const key=ds.id+':'+ds.ym; if(fxInFlight.has(key)) break;
+      const it=DATA.forecast.find(x=>x.id===ds.id); if(!it) break;
+      fxInFlight.add(key); if(fixedDetailYm) openFixedDetail(fixedDetailYm);
+      const y=+ds.ym.slice(0,4), mi=+ds.ym.slice(5,7)-1;
+      materializeItem(it,y,mi).then(r=>{ fxInFlight.delete(key); if(r==='problem') toast('Manca il conto per l\u2019accantonamento'); if(fixedDetailYm) openFixedDetail(fixedDetailYm); }).catch(()=>{ fxInFlight.delete(key); });
+      break;
+    }
+    case 'fx-undo': {
+      const it=DATA.forecast.find(x=>x.id===ds.id);
+      unmaterializeItem(ds.id, ds.ym).then(()=>{ if(fixedDetailYm) openFixedDetail(fixedDetailYm); });
+      break;
+    }
+    case 'backups': openBackups(); break;
+    case 'bk-restore': restoreLocalBackup(ds.key); break;
     case 'sheet-close': closeSheet(); break;
     case 'logout': if(modalOpen) closeSheet(); store.logout(); break;
     case 'export': exportJSON(); break;

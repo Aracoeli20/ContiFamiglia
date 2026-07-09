@@ -403,3 +403,16 @@ code{font-family:ui-monospace,Menlo,monospace;font-size:.85em;background:var(--s
 .verdict svg{flex:0 0 auto;margin-top:1px}
 .verdict.ok{background:#E8EFEC;color:#2f5d54}
 .verdict.warn{background:#F3E0D8;color:var(--terra)}
+
+/* ---------- v3.7 · home voci fisse cliccabile + backup ---------- */
+.nudge-btn{display:block;width:100%;text-align:left;cursor:pointer;border:0;font:inherit}
+.nudge-cta{display:inline-flex;align-items:center;gap:3px;color:var(--acqua);font-size:.82rem;font-weight:600;white-space:nowrap}
+.fx-list{display:flex;flex-direction:column}
+.fx-row{display:flex;align-items:center;gap:10px;padding:9px 2px;border-bottom:1px solid var(--line-2)}
+.fx-row:last-child{border-bottom:0}
+.fx-done{display:inline-flex;align-items:center;gap:4px;color:var(--acqua);font-size:.82rem;font-weight:600}
+.fx-row .row-side{display:flex;align-items:center;gap:8px}
+.btn.xs{padding:5px 10px;font-size:.8rem;border-radius:8px}
+.bk-status{background:var(--surface-2);border-radius:var(--r-sm);padding:8px 11px;margin-bottom:2px}
+.bk-status .calc-row{font-size:.84rem}
+.bk-status .calc-row.warn span{color:var(--terra)}

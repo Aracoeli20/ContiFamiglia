@@ -2,7 +2,7 @@
    App shell: network-first (così un nuovo deploy si vede subito quando sei online,
    e resta disponibile offline). CDN/font: cache-first. I dati Firestore hanno la
    loro cache offline integrata e non passano da qui. */
-const CACHE = 'conti-v3-6';
+const CACHE = 'conti-v3-7';
 const SHELL = [
   './', './index.html', './style.css', './app.js', './store.js',
   './firebase-config.js', './manifest.json',
