@@ -167,7 +167,7 @@ let view='cruscotto';
 let fMonth=curMonth(), fPerson='all', fType='all', fAccount='all', fYear=curYear();
 let modalOpen=false, pendingRender=false;
 let sheetType='uscita', movEditId=null, assetEditId=null, accEditId=null, fcEditId=null, goalEditId=null;
-let fixedDetailYm=null; const fxInFlight=new Set(); let backupRan=false;
+let fixedDetailYm=null; let fxDate=null; const fxInFlight=new Set(); let backupRan=false; let txLoaded=false, autoPostRan=false;
 let opAccId=null, opMode='debit', gateTab='login';
 
 /* ===================== Boot ===================== */
@@ -189,7 +189,7 @@ async function init(){
 }
 function ensureData(){
   if(subs.tx) return;
-  subs.tx = store.subscribe('transactions', a=>{ DATA.transactions=a; softRender(); });
+  subs.tx = store.subscribe('transactions', a=>{ DATA.transactions=a; txLoaded=true; softRender(); });
   subs.as = store.subscribe('assets',       a=>{ DATA.assets=a; softRender(); });
   subs.sn = store.subscribe('snapshots',     a=>{ DATA.snapshots=a; softRender(); });
   subs.mb = store.subscribe('members',       a=>{ DATA.members=a; softRender(); });
@@ -219,7 +219,7 @@ async function seedAccounts(){ for(let i=0;i<DEFAULT_ACCOUNTS.length;i++){ const
 async function seedForecast(){ const y=curYear(); for(let i=0;i<DEFAULT_FORECAST.length;i++){ await store.add('forecast',{ name:DEFAULT_FORECAST[i], kind:'ricorrente', group:'', macro:'incomprimibili', sub:'', account:'', year:y, amounts:Array(12).fill(0), cells:{}, order:i }); } }
 function teardownData(){ Object.values(subs).forEach(u=>{ try{ u&&u(); }catch{} }); for(const k in subs) delete subs[k]; }
 function normalizeCats(c){ return { spese:{ incomprimibili:(c&&c.spese&&c.spese.incomprimibili)||[], oggettive:(c&&c.spese&&c.spese.oggettive)||[], superflue:(c&&c.spese&&c.spese.superflue)||[] }, entrate:(c&&c.entrate)||[] }; }
-function softRender(){ if(!me) return; if(!backupRan && (DATA.accounts.length||DATA.transactions.length)){ backupRan=true; autoBackup(); } if(modalOpen){ pendingRender=true; if(fixedDetailYm){ try{ openFixedDetail(fixedDetailYm); }catch(e){} } return; } render(); }
+function softRender(){ if(!me) return; if(!backupRan && (DATA.accounts.length||DATA.transactions.length)){ backupRan=true; autoBackup(); } if(!autoPostRan && txLoaded && DATA.forecast.length){ autoPostRan=true; autoMaterializeDue(); } if(modalOpen){ pendingRender=true; if(fixedDetailYm){ try{ openFixedDetail(fixedDetailYm); }catch(e){} } return; } render(); }
 
 /* ===================== Calcoli conti / patrimonio ===================== */
 function computeBalances(){
@@ -354,19 +354,55 @@ function carryStatus(ym){
   items.forEach(it=>{ const amt=fcMonthly(it,y,mi); plannedTot+=amt; const key=`${it.id}:${ym}`; if(DATA.transactions.some(t=>t.planKey===key)){ carried++; carriedTot+=amt; } });
   return { plannedCount:items.length, plannedTot:Math.round(plannedTot*100)/100, carried, carriedTot:Math.round(carriedTot*100)/100, todo:items.length-carried, year:y, mi };
 }
-async function materializeItem(it, y, mi){
+function defaultMaterializeDate(ym){
+  const today=todayISO();
+  if(periodOf(today)===ym) return today;
+  return periodRange(ym).startISO;
+}
+async function autoMaterializeDue(){
+  if(!me) return;
+  const ym=curMonth(); const y=+ym.slice(0,4), mi=+ym.slice(5,7)-1; const today=todayISO();
+  const items=fcItemsForYear(y).filter(it=> it.autoPost && (+it.payDay>0) && fcMonthly(it,y,mi)>0);
+  let n=0;
+  for(const it of items){
+    const key=`${it.id}:${ym}`;
+    if(DATA.transactions.some(t=>t.planKey===key)) continue;
+    const ed=itemMaterializeDate(it, ym);
+    if(ed>today) continue;
+    const r=await materializeItem(it,y,mi,ed);
+    if(r==='created') n++;
+  }
+  if(n) toast(`${n==1?'1 voce fissa registrata':n+' voci fisse registrate'} in automatico`);
+}
+function dateForDayInPeriod(ym, day){
+  const D=cycleDay(); const Y=+ym.slice(0,4), M=+ym.slice(5,7);
+  const clampDay=(yy,mm,dd)=>Math.min(Math.max(1,dd), new Date(yy,mm,0).getDate());
+  if(D<=1 || day<D) return `${Y}-${p2(M)}-${p2(clampDay(Y,M,day))}`;
+  let sY=Y, sM=M-1; if(sM<1){ sM=12; sY=Y-1; }
+  return `${sY}-${p2(sM)}-${p2(clampDay(sY,sM,day))}`;
+}
+function itemPayDay(it){
+  if(it.kind==='scadenza'||it.kind==='accantonamento') return parseInt(it.dueDay,10)||0;
+  return parseInt(it.payDay,10)||0;
+}
+function itemMaterializeDate(it, ym, fallback){
+  const day=itemPayDay(it);
+  return day>0 ? dateForDayInPeriod(ym, day) : (fallback || defaultMaterializeDate(ym));
+}
+async function materializeItem(it, y, mi, dateISO){
   const ym=ymOf(y,mi); const amt=Math.round(fcMonthly(it,y,mi)*100)/100;
   if(amt<=0) return 'skip';
   const key=`${it.id}:${ym}`;
   if(DATA.transactions.some(t=>t.planKey===key)) return 'skip';
+  const dISO = itemMaterializeDate(it, ym, dateISO);
   if(it.flow==='entrata'){
-    await store.add('transactions',{ type:'entrata', amount:amt, date:`${ym}-01`, macro:null, sub:it.sub||it.name, account:it.account||'', paidBy:me.uid, enteredBy:me.uid, note:'Entrata prevista (previsionale)', fixed:true, origin:'previsionale', planKey:key });
+    await store.add('transactions',{ type:'entrata', amount:amt, date:dISO, macro:null, sub:it.sub||it.name, account:it.account||'', paidBy:me.uid, enteredBy:me.uid, note:'Entrata prevista (previsionale)', fixed:true, origin:'previsionale', planKey:key });
   } else if((it.kind||'ricorrente')==='accantonamento'){
     const from=it.account||'', to=it.fundAccount||'';
     if(!from||!to) return 'problem';
-    await store.add('transactions',{ type:'giroconto', amount:amt, date:`${ym}-01`, fromAccount:from, toAccount:to, note:`Accantonamento · ${it.name}`, enteredBy:me.uid, origin:'previsionale', fixed:true, planKey:key });
+    await store.add('transactions',{ type:'giroconto', amount:amt, date:dISO, fromAccount:from, toAccount:to, note:`Accantonamento · ${it.name}`, enteredBy:me.uid, origin:'previsionale', fixed:true, planKey:key });
   } else {
-    await store.add('transactions',{ type:'uscita', amount:amt, date:`${ym}-01`, macro:it.macro||'incomprimibili', sub:it.sub||it.name, account:it.account||'', paidBy:me.uid, enteredBy:me.uid, note:'Spesa fissa (previsionale)', fixed:true, origin:'previsionale', planKey:key });
+    await store.add('transactions',{ type:'uscita', amount:amt, date:dISO, macro:it.macro||'incomprimibili', sub:it.sub||it.name, account:it.account||'', paidBy:me.uid, enteredBy:me.uid, note:'Spesa fissa (previsionale)', fixed:true, origin:'previsionale', planKey:key });
   }
   return 'created';
 }
@@ -374,10 +410,10 @@ async function unmaterializeItem(itemId, ym){
   const key=`${itemId}:${ym}`; const tx=DATA.transactions.find(t=>t.planKey===key);
   if(tx){ try{ await store.remove('transactions', tx.id); }catch(e){ console.warn(e); } }
 }
-async function materializeMonth(y,mi){
+async function materializeMonth(y,mi,dateISO){
   const items=fcItemsForYear(y).filter(it=>fcMonthly(it,y,mi)>0);
   let created=0, skipped=0, problems=0;
-  for(const it of items){ const r=await materializeItem(it,y,mi); if(r==='created')created++; else if(r==='problem')problems++; else skipped++; }
+  for(const it of items){ const r=await materializeItem(it,y,mi,dateISO); if(r==='created')created++; else if(r==='problem')problems++; else skipped++; }
   if(modalOpen && !fixedDetailYm) closeSheet();
   let msg = created ? `${created} voci portate nel rendiconto` : 'Niente da portare';
   if(skipped) msg += created ? `, ${skipped} già presenti` : ` (${skipped} già presenti)`;
@@ -1041,7 +1077,7 @@ function openSheet(html){
   const first=m.querySelector('input,select'); if(first) setTimeout(()=>first.focus(),140);
 }
 function closeSheet(){
-  modalOpen=false; movEditId=null; assetEditId=null; accEditId=null; fcEditId=null; goalEditId=null; fixedDetailYm=null;
+  modalOpen=false; movEditId=null; assetEditId=null; accEditId=null; fcEditId=null; goalEditId=null; fixedDetailYm=null; fxDate=null;
   el('modal-root').innerHTML='';
   if(pendingRender){ pendingRender=false; render(); }
 }
@@ -1434,13 +1470,13 @@ function openFcItem(it){
   fcEditId = it?it.id:null;
   const now=new Date(), Y=curYear(), M=now.getMonth();
   const d = it ? {
-    kind:it.kind||'ricorrente', flow:it.flow==='entrata'?'entrata':'uscita', name:it.name||'', group:it.group||'', macro:it.macro||'incomprimibili', sub:(it.flow==='entrata'?'':(it.sub||'')), cat:(it.flow==='entrata'?(it.sub||''):''), account:it.account||'',
+    kind:it.kind||'ricorrente', flow:it.flow==='entrata'?'entrata':'uscita', name:it.name||'', group:it.group||'', macro:it.macro||'incomprimibili', sub:(it.flow==='entrata'?'':(it.sub||'')), cat:(it.flow==='entrata'?(it.sub||''):''), account:it.account||'', payDay:(it.payDay!=null?it.payDay:''), autoPost:!!it.autoPost,
     amounts:(it.amounts||Array(12).fill(0)).slice(0,12),
     rataAmount:it.rataAmount, nRate:it.nRate, startYear:it.startYear!=null?it.startYear:Y, startMonth:it.startMonth!=null?it.startMonth:M, linkPass:it.linkPass!==false,
     target:it.target, dueYear:it.dueYear!=null?it.dueYear:Y, dueMonth:it.dueMonth!=null?it.dueMonth:M, dueDay:it.dueDay||'', accStartYear:it.accStartYear!=null?it.accStartYear:Y, accStartMonth:it.accStartMonth!=null?it.accStartMonth:M, fundAccount:it.fundAccount||'',
     amount:it.amount
   } : {
-    kind:'ricorrente', flow:'uscita', name:'', group:'', macro:'incomprimibili', sub:'', cat:'', account:'',
+    kind:'ricorrente', flow:'uscita', name:'', group:'', macro:'incomprimibili', sub:'', cat:'', account:'', payDay:'', autoPost:false,
     amounts:Array(12).fill(0),
     rataAmount:'', nRate:'', startYear:Y, startMonth:M, linkPass:true,
     target:'', dueYear:Y, dueMonth:M, dueDay:'', accStartYear:Y, accStartMonth:M, fundAccount:'',
@@ -1527,6 +1563,9 @@ function renderFcSheet(d){
       </div>
       ${isInc?'':`<label class="field"><span>Sottocategoria (opz.)</span><input id="fc-sub" placeholder="Lascia vuoto per usare il nome" value="${escapeHtml(d.sub||'')}"></label>`}
       <label class="field"><span>${acctLabel}</span><select id="fc-account">${accountOptions(d.account,true)}</select></label>
+      ${(d.kind==='ricorrente'||d.kind==='rata') ? `<label class="field"><span>Giorno abituale del mese (facoltativo)</span><input id="fc-payday" inputmode="numeric" min="1" max="31" value="${d.payDay!=null&&d.payDay!==''?d.payDay:''}" placeholder="es. 5 · lascia vuoto per la data odierna"></label>
+      <label class="check"><input type="checkbox" id="fc-auto" ${d.autoPost?'checked':''}><span>Registra il movimento da solo alla data (quando apri l\u2019app)</span></label>
+      <p class="hint" style="margin-top:-2px">Serve il giorno abituale. A telefono spento non è possibile: registra alla prima apertura dal giorno indicato.</p>` : ''}
       ${block}
       <div class="sheet-error" id="fc-err"></div>
       <div class="sheet-actions">
@@ -1568,7 +1607,7 @@ function applyFcPattern(){
 function readFcAmounts(){ const arr=Array(12).fill(0); document.querySelectorAll('.fc-in').forEach(inp=>{ const i=+inp.dataset.mi; const n=parseAmount(inp.value); arr[i]=isNaN(n)?0:Math.round(n*100)/100; }); return arr; }
 function readFcDraft(){
   const v=id=>{ const e=el(id); return e?e.value:''; };
-  const d={ kind:v('fc-kind')||'ricorrente', flow:(v('fc-flow')==='entrata'?'entrata':'uscita'), name:v('fc-name'), group:v('fc-group'), macro:v('fc-macro')||'incomprimibili', sub:v('fc-sub'), cat:v('fc-cat'), account:v('fc-account'),
+  const d={ kind:v('fc-kind')||'ricorrente', flow:(v('fc-flow')==='entrata'?'entrata':'uscita'), name:v('fc-name'), group:v('fc-group'), macro:v('fc-macro')||'incomprimibili', sub:v('fc-sub'), cat:v('fc-cat'), account:v('fc-account'), payDay:v('fc-payday'), autoPost: el('fc-auto')?el('fc-auto').checked:false,
     amounts:readFcAmounts(),
     rataAmount:v('fc-rata'), nRate:v('fc-nrate'), startMonth:v('fc-smonth'), startYear:v('fc-syear'), linkPass: el('fc-linkpass')?el('fc-linkpass').checked:true,
     target:v('fc-target'), dueMonth:v('fc-duemonth'), dueYear:v('fc-dueyear'), dueDay:v('fc-dueday'), accStartMonth:v('fc-accmonth'), accStartYear:curYear(), fundAccount:v('fc-fund'),
@@ -1581,9 +1620,13 @@ async function saveFcItem(){
   if(!name){ if(err) err.textContent='Dai un nome alla voce.'; return; }
   const isInc = d.flow==='entrata';
   if(isInc && (d.kind==='rata'||d.kind==='accantonamento')){ if(err) err.textContent='Per le entrate usa Ricorrente o Scadenza singola.'; return; }
+  const isRec = (d.kind==='ricorrente'||d.kind==='rata');
+  const pd = parseInt(d.payDay,10);
+  const payDay = (isRec && pd>0) ? Math.max(1,Math.min(31,pd)) : null;
+  const autoPost = (isRec && payDay) ? !!d.autoPost : false;
   const base = isInc
-    ? { name, kind:d.kind, flow:'entrata', group:(d.group||'').trim(), macro:null, sub:(d.cat||'Altro'), account:d.account||'' }
-    : { name, kind:d.kind, flow:'uscita', group:(d.group||'').trim(), macro:d.macro||'incomprimibili', sub:(d.sub||'').trim(), account:d.account||'' };
+    ? { name, kind:d.kind, flow:'entrata', group:(d.group||'').trim(), macro:null, sub:(d.cat||'Altro'), account:d.account||'', payDay, autoPost }
+    : { name, kind:d.kind, flow:'uscita', group:(d.group||'').trim(), macro:d.macro||'incomprimibili', sub:(d.sub||'').trim(), account:d.account||'', payDay, autoPost };
   let rec;
   if(d.kind==='rata'){
     const rata=parseAmount(d.rataAmount), n=parseInt(d.nRate,10);
@@ -1802,19 +1845,22 @@ async function repairDuplicates(){
 
 function openFixedDetail(ym){
   fixedDetailYm=ym;
+  if(fxDate===null) fxDate=defaultMaterializeDate(ym);
   const y=+ym.slice(0,4), mi=+ym.slice(5,7)-1;
   const items=fcItemsForYear(y).filter(it=>fcMonthly(it,y,mi)>0);
   const rows=items.map(it=>{
     const amt=Math.round(fcMonthly(it,y,mi)*100)/100; const key=`${it.id}:${ym}`;
     const done=DATA.transactions.some(t=>t.planKey===key);
     const busy=fxInFlight.has(key);
+    const day=itemPayDay(it);
+    const rowDate = itemMaterializeDate(it, ym, fxDate);
     const kindTag = it.flow==='entrata'?'entrata':((it.kind==='accantonamento')?'accant.':(it.kind==='rata'?'rata':''));
     const right = done
       ? `<span class="fx-done">${svg('check','ic-xs')} inserita</span><button class="btn ghost xs" data-act="fx-undo" data-id="${it.id}" data-ym="${ym}">annulla</button>`
       : `<button class="btn primary xs" data-act="fx-add" data-id="${it.id}" data-ym="${ym}" ${busy?'disabled':''}>${busy?'…':'Inserisci'}</button>`;
     const dot = it.flow==='entrata'?'#3E6B63':macro(it.macro).color;
     return `<div class="fx-row"><span class="row-dot" style="--c:${dot}"></span>
-      <span class="row-main"><span class="row-cat">${escapeHtml(it.name)}${kindTag?` <span class="fc-ktag">${kindTag}</span>`:''}</span><span class="row-meta">${it.flow==='entrata'?'entrata prevista':'spesa fissa'} · ${eur(amt)}</span></span>
+      <span class="row-main"><span class="row-cat">${escapeHtml(it.name)}${kindTag?` <span class="fc-ktag">${kindTag}</span>`:''}</span><span class="row-meta">${eur(amt)} · ${dayShort(rowDate)}${day>0?'':' <span class="muted">(data odierna)</span>'}</span></span>
       <span class="row-side">${right}</span></div>`;
   }).join('');
   const cs=carryStatus(ym);
@@ -1822,6 +1868,7 @@ function openFixedDetail(ym){
     <div class="sheet-h"><h3 class="sheet-title">Voci fisse · ${monthName(ym)}</h3><button class="iconbtn" data-act="sheet-close" aria-label="Chiudi">${svg('x')}</button></div>
     <div class="sheet-body">
       <p class="hint" style="margin-top:0">"Inserisci nel rendiconto" crea il movimento vero nel registro del mese, una volta sola. Qui vedi quali sono già inserite e quali no; puoi inserirle una a una o tutte insieme, e annullare.</p>
+      <label class="field"><span>Data per le voci senza giorno abituale</span><input id="fx-date" type="date" data-act="fxdate-set" value="${fxDate}"></label>
       <div class="fx-list">${rows||emptyState('Nessuna voce fissa per questo mese.')}</div>
       ${cs.todo>0?`<button class="btn primary block" data-act="fixed-carry" data-year="${cs.year}" data-mi="${cs.mi}" style="margin-top:12px">${svg('download')} Inserisci tutte le mancanti (${cs.todo})</button>`:(items.length?`<div class="done-tag" style="justify-content:center;margin-top:12px">${svg('check','ic-xs')} Tutte inserite</div>`:'')}
     </div>`);
@@ -2012,15 +2059,16 @@ function onClick(e){
     case 'fc-apply': applyFcPattern(); break;
     case 'fc-save': saveFcItem(); break;
     case 'fc-delete': deleteFcItem(ds.id); break;
-    case 'fc-carry-pick': { const mi=parseInt(el('carry-month')?el('carry-month').value:'0',10)||0; materializeMonth(parseInt(ds.year,10), mi); break; }
-    case 'fixed-carry': materializeMonth(parseInt(ds.year,10), parseInt(ds.mi,10)); break;
+    case 'fc-carry-pick': { const mi=parseInt(el('carry-month')?el('carry-month').value:'0',10)||0; const yy=parseInt(ds.year,10); materializeMonth(yy, mi, defaultMaterializeDate(ymOf(yy,mi))); break; }
+    case 'fixed-carry': materializeMonth(parseInt(ds.year,10), parseInt(ds.mi,10), (el('fx-date')&&el('fx-date').value)||fxDate||undefined); break;
     case 'fixed-detail': openFixedDetail(ds.ym); break;
     case 'fx-add': {
       const key=ds.id+':'+ds.ym; if(fxInFlight.has(key)) break;
       const it=DATA.forecast.find(x=>x.id===ds.id); if(!it) break;
+      const dISO=(el('fx-date')&&el('fx-date').value)||fxDate||undefined;
       fxInFlight.add(key); if(fixedDetailYm) openFixedDetail(fixedDetailYm);
       const y=+ds.ym.slice(0,4), mi=+ds.ym.slice(5,7)-1;
-      materializeItem(it,y,mi).then(r=>{ fxInFlight.delete(key); if(r==='problem') toast('Manca il conto per l\u2019accantonamento'); if(fixedDetailYm) openFixedDetail(fixedDetailYm); }).catch(()=>{ fxInFlight.delete(key); });
+      materializeItem(it,y,mi,dISO).then(r=>{ fxInFlight.delete(key); if(r==='problem') toast('Manca il conto per l\u2019accantonamento'); if(fixedDetailYm) openFixedDetail(fixedDetailYm); }).catch(()=>{ fxInFlight.delete(key); });
       break;
     }
     case 'fx-undo': {
@@ -2066,6 +2114,7 @@ function onChange(e){
   else if(act==='ae-kind'){ const d=readAccountDraft(); renderAccountSheet(d); }
   else if(act==='int-calc'){ updateInterestCalc(); }
   else if(act==='goal-recalc'){ updateGoalCalc(); }
+  else if(act==='fxdate-set'){ fxDate=e.target.value||fxDate; }
   else if(act==='budget-set'){
     const n=Math.max(0,Math.min(100,+((el('bg-needs')||{}).value)||0));
     const w=Math.max(0,Math.min(100,+((el('bg-wants')||{}).value)||0));
