@@ -273,6 +273,13 @@ function fcMonthly(it, y, mi){
   if(Object.prototype.hasOwnProperty.call(cells,key)) return +cells[key]||0;
   const arr=it.amounts||[]; return +arr[mi]||0;
 }
+function fcMonthlyPlan(it, y, mi){
+  if(it.spread && (it.kind||'ricorrente')==='ricorrente' && it.flow!=='entrata'){
+    let s=0; for(let m=0;m<12;m++) s+=fcMonthly(it,y,m);
+    return Math.round(s/12*100)/100;
+  }
+  return fcMonthly(it, y, mi);
+}
 function fcActiveInYear(it,y){
   if((it.kind||'ricorrente')==='ricorrente') return true;
   for(let mi=0;mi<12;mi++) if(fcMonthly(it,y,mi)>0) return true;
@@ -283,8 +290,8 @@ function fcItemsForYear(y){
   return fcAllItems().filter(it=>fcActiveInYear(it,y))
     .sort((a,b)=>{ const ga=(a.group||''), gb=(b.group||''); if(ga!==gb) return ga<gb?-1:1; return (a.order||0)-(b.order||0); });
 }
-const fcItemAnnual = (it,y) => { let s=0; for(let mi=0;mi<12;mi++) s+=fcMonthly(it,y,mi); return Math.round(s*100)/100; };
-const fcMonthTotal = (items,y,mi) => Math.round(sum(items.map(i=>fcMonthly(i,y,mi)))*100)/100;
+const fcItemAnnual = (it,y) => { let s=0; for(let mi=0;mi<12;mi++) s+=fcMonthlyPlan(it,y,mi); return Math.round(s*100)/100; };
+const fcMonthTotal = (items,y,mi) => Math.round(sum(items.map(i=>fcMonthlyPlan(i,y,mi)))*100)/100;
 function fcGrouped(items){ const out=[], map={}; items.forEach(it=>{ const g=it.group||''; if(!map[g]){ map[g]={group:g,items:[]}; out.push(map[g]); } map[g].items.push(it); }); return out; }
 
 function rataPaidCount(it, asOfY, asOfMi){
@@ -633,8 +640,8 @@ function viewPrevisionale(){
   const head = MESI_AB.map(m=>`<th>${m}</th>`).join('');
   const itemRow = (it, child) => {
     const km=fcKindMeta(it.kind);
-    const cells = MESI_AB.map((_,i)=>{ const v=fcMonthly(it,fYear,i); return `<td class="fc-cell${v>0?'':' zero'}">${v>0?eur0(v):'·'}</td>`; }).join('');
-    const tag = (it.kind&&it.kind!=='ricorrente') ? `<span class="fc-ktag">${km.label.split(' ')[0]}</span>` : '';
+    const cells = MESI_AB.map((_,i)=>{ const v=fcMonthlyPlan(it,fYear,i); return `<td class="fc-cell${v>0?'':' zero'}">${v>0?eur0(v):'·'}</td>`; }).join('');
+    const tag = it.spread ? `<span class="fc-ktag">spalm.</span>` : ((it.kind&&it.kind!=='ricorrente') ? `<span class="fc-ktag">${km.label.split(' ')[0]}</span>` : '');
     const dot = it.flow==='entrata' ? '#3E6B63' : macro(it.macro).color;
     return `<tr class="fc-row${child?' fc-child':''}"><td class="fc-name"><button class="fc-name-btn" data-act="fc-edit" data-id="${it.id}"><span class="tier-dot" style="--c:${dot}"></span><span class="fc-nm">${escapeHtml(it.name)}</span>${tag}</button></td>${cells}<td class="fc-cell fc-total">${eur0(fcItemAnnual(it,fYear))}</td></tr>`;
   };
@@ -704,7 +711,7 @@ const beforeStart = ym => { const s=startYM(); return s ? ym < s : false; };
 const isStartMonth = ym => { const s=startYM(); return !!s && ym===s && BUDGET.startDate > periodRange(ym).startISO; };
 function plannedBudgetMonth(ym){
   const yy=+ym.slice(0,4), mi=+ym.slice(5,7)-1; let inc=0, needs=0, wants=0;
-  DATA.forecast.forEach(it=>{ const v=fcMonthly(it,yy,mi); if(v<=0) return;
+  DATA.forecast.forEach(it=>{ const v=fcMonthlyPlan(it,yy,mi); if(v<=0) return;
     if(it.flow==='entrata') inc+=v; else if(it.macro==='superflue') wants+=v; else needs+=v; });
   return { inc:Math.round(inc*100)/100, needs:Math.round(needs*100)/100, wants:Math.round(wants*100)/100 };
 }
@@ -1470,13 +1477,13 @@ function openFcItem(it){
   fcEditId = it?it.id:null;
   const now=new Date(), Y=curYear(), M=now.getMonth();
   const d = it ? {
-    kind:it.kind||'ricorrente', flow:it.flow==='entrata'?'entrata':'uscita', name:it.name||'', group:it.group||'', macro:it.macro||'incomprimibili', sub:(it.flow==='entrata'?'':(it.sub||'')), cat:(it.flow==='entrata'?(it.sub||''):''), account:it.account||'', payDay:(it.payDay!=null?it.payDay:''), autoPost:!!it.autoPost,
+    kind:it.kind||'ricorrente', flow:it.flow==='entrata'?'entrata':'uscita', name:it.name||'', group:it.group||'', macro:it.macro||'incomprimibili', sub:(it.flow==='entrata'?'':(it.sub||'')), cat:(it.flow==='entrata'?(it.sub||''):''), account:it.account||'', payDay:(it.payDay!=null?it.payDay:''), autoPost:!!it.autoPost, spread:!!it.spread,
     amounts:(it.amounts||Array(12).fill(0)).slice(0,12),
     rataAmount:it.rataAmount, nRate:it.nRate, startYear:it.startYear!=null?it.startYear:Y, startMonth:it.startMonth!=null?it.startMonth:M, linkPass:it.linkPass!==false,
     target:it.target, dueYear:it.dueYear!=null?it.dueYear:Y, dueMonth:it.dueMonth!=null?it.dueMonth:M, dueDay:it.dueDay||'', accStartYear:it.accStartYear!=null?it.accStartYear:Y, accStartMonth:it.accStartMonth!=null?it.accStartMonth:M, fundAccount:it.fundAccount||'',
     amount:it.amount
   } : {
-    kind:'ricorrente', flow:'uscita', name:'', group:'', macro:'incomprimibili', sub:'', cat:'', account:'', payDay:'', autoPost:false,
+    kind:'ricorrente', flow:'uscita', name:'', group:'', macro:'incomprimibili', sub:'', cat:'', account:'', payDay:'', autoPost:false, spread:false,
     amounts:Array(12).fill(0),
     rataAmount:'', nRate:'', startYear:Y, startMonth:M, linkPass:true,
     target:'', dueYear:Y, dueMonth:M, dueDay:'', accStartYear:Y, accStartMonth:M, fundAccount:'',
@@ -1566,6 +1573,8 @@ function renderFcSheet(d){
       ${(d.kind==='ricorrente'||d.kind==='rata') ? `<label class="field"><span>Giorno abituale del mese (facoltativo)</span><input id="fc-payday" inputmode="numeric" min="1" max="31" value="${d.payDay!=null&&d.payDay!==''?d.payDay:''}" placeholder="es. 5 · lascia vuoto per la data odierna"></label>
       <label class="check"><input type="checkbox" id="fc-auto" ${d.autoPost?'checked':''}><span>Registra il movimento da solo alla data (quando apri l\u2019app)</span></label>
       <p class="hint" style="margin-top:-2px">Serve il giorno abituale. A telefono spento non è possibile: registra alla prima apertura dal giorno indicato.</p>` : ''}
+      ${(!isInc && d.kind==='ricorrente') ? `<label class="check"><input type="checkbox" id="fc-spread" ${d.spread?'checked':''}><span>Accantona: spalma il totale annuo in quote mensili uguali${(()=>{const s=(d.amounts||[]).reduce((a,b)=>a+(+b||0),0); return s>0?` (≈ ${eur(Math.round(s/12*100)/100)}/mese · ${eur(Math.round(s*100)/100)}/anno)`:'';})()}</span></label>
+      <p class="hint" style="margin-top:-2px">Nel previsionale e nel 50/30/20 la spesa appare come quota mensile costante invece che a colpi. Il pagamento reale resta alla sua data (le "voci fisse" e il rendiconto non cambiano).</p>` : ''}
       ${block}
       <div class="sheet-error" id="fc-err"></div>
       <div class="sheet-actions">
@@ -1607,7 +1616,7 @@ function applyFcPattern(){
 function readFcAmounts(){ const arr=Array(12).fill(0); document.querySelectorAll('.fc-in').forEach(inp=>{ const i=+inp.dataset.mi; const n=parseAmount(inp.value); arr[i]=isNaN(n)?0:Math.round(n*100)/100; }); return arr; }
 function readFcDraft(){
   const v=id=>{ const e=el(id); return e?e.value:''; };
-  const d={ kind:v('fc-kind')||'ricorrente', flow:(v('fc-flow')==='entrata'?'entrata':'uscita'), name:v('fc-name'), group:v('fc-group'), macro:v('fc-macro')||'incomprimibili', sub:v('fc-sub'), cat:v('fc-cat'), account:v('fc-account'), payDay:v('fc-payday'), autoPost: el('fc-auto')?el('fc-auto').checked:false,
+  const d={ kind:v('fc-kind')||'ricorrente', flow:(v('fc-flow')==='entrata'?'entrata':'uscita'), name:v('fc-name'), group:v('fc-group'), macro:v('fc-macro')||'incomprimibili', sub:v('fc-sub'), cat:v('fc-cat'), account:v('fc-account'), payDay:v('fc-payday'), autoPost: el('fc-auto')?el('fc-auto').checked:false, spread: el('fc-spread')?el('fc-spread').checked:false,
     amounts:readFcAmounts(),
     rataAmount:v('fc-rata'), nRate:v('fc-nrate'), startMonth:v('fc-smonth'), startYear:v('fc-syear'), linkPass: el('fc-linkpass')?el('fc-linkpass').checked:true,
     target:v('fc-target'), dueMonth:v('fc-duemonth'), dueYear:v('fc-dueyear'), dueDay:v('fc-dueday'), accStartMonth:v('fc-accmonth'), accStartYear:curYear(), fundAccount:v('fc-fund'),
@@ -1625,8 +1634,8 @@ async function saveFcItem(){
   const payDay = (isRec && pd>0) ? Math.max(1,Math.min(31,pd)) : null;
   const autoPost = (isRec && payDay) ? !!d.autoPost : false;
   const base = isInc
-    ? { name, kind:d.kind, flow:'entrata', group:(d.group||'').trim(), macro:null, sub:(d.cat||'Altro'), account:d.account||'', payDay, autoPost }
-    : { name, kind:d.kind, flow:'uscita', group:(d.group||'').trim(), macro:d.macro||'incomprimibili', sub:(d.sub||'').trim(), account:d.account||'', payDay, autoPost };
+    ? { name, kind:d.kind, flow:'entrata', group:(d.group||'').trim(), macro:null, sub:(d.cat||'Altro'), account:d.account||'', payDay, autoPost, spread:false }
+    : { name, kind:d.kind, flow:'uscita', group:(d.group||'').trim(), macro:d.macro||'incomprimibili', sub:(d.sub||'').trim(), account:d.account||'', payDay, autoPost, spread:(d.kind==='ricorrente')?!!d.spread:false };
   let rec;
   if(d.kind==='rata'){
     const rata=parseAmount(d.rataAmount), n=parseInt(d.nRate,10);
