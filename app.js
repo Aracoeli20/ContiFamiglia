@@ -498,15 +498,20 @@ const emptyState = msg => `<div class="empty">${escapeHtml(msg)}</div>`;
 
 /* ===================== Vista: Cruscotto ===================== */
 function viewCruscotto(){
-  const list = txMonth(fMonth);
-  const ent = sum(list.filter(countsIncome).map(t=>t.amount));
-  const usc = sum(list.filter(countsExpense).map(t=>t.amount));
-  const delta = ent - usc;
-  const per = { incomprimibili:0, oggettive:0, superflue:0 };
-  list.filter(countsExpense).forEach(t=>{ per[t.macro] = (per[t.macro]||0) + (+t.amount||0); });
-  const recent = DATA.transactions.slice(0,6);
   const np = netWorthParts();
   const cs = carryStatus(fMonth);
+  const recent = DATA.transactions.slice(0,5);
+  const y=+fMonth.slice(0,4), mi=+fMonth.slice(5,7)-1;
+  // Conto Tasse = quote mensili delle voci fiscali spalmate
+  const tmap={}; DATA.forecast.forEach(it=>{ if(it.spread && it.flow!=='entrata'){ const q=fcSpreadQuota(it,y,mi); if(q>0) tmap[it.name]=(tmap[it.name]||0)+q; } });
+  const tasseItems=Object.entries(tmap).map(([name,q])=>({name,q:Math.round(q*100)/100})).sort((a,b)=>b.q-a.q);
+  const tasseTotal=Math.round(sum(tasseItems.map(x=>x.q))*100)/100;
+  // Accantonamenti = obiettivi di risparmio (quota mensile) verso i loro conti
+  const goals=DATA.goals.map(g=>{ const m=(+g.monthly>0)?+g.monthly:(goalStats(g).quotaFromDue||0); return { name:(accountById(g.account)||{}).name||g.name, m:Math.round(m*100)/100 }; }).filter(g=>g.m>0);
+  const goalsTotal=Math.round(sum(goals.map(g=>g.m))*100)/100;
+  const total=Math.round((tasseTotal+goalsTotal)*100)/100;
+  const plan=plannedBudgetMonth(fMonth);
+  const resto=Math.round((plan.inc - plan.needs - plan.wants - goalsTotal)*100)/100;
   const scad = upcomingDeadlines(30);
   const scadCard = scad.length ? `
     <section class="card">
@@ -524,23 +529,22 @@ function viewCruscotto(){
     </button>` : '';
   return `
   ${monthNav()}
-  <section class="card hero">
-    <div class="stat-row">
-      <div class="stat"><span class="k">Entrate</span><span class="v pos">${eur(ent)}</span></div>
-      <div class="stat"><span class="k">Uscite</span><span class="v">${eur(usc)}</span></div>
-      <div class="stat"><span class="k">Delta</span><span class="v ${delta>=0?'pos':'neg'}">${signed(delta)}</span></div>
-    </div>
-    <div class="hero-cap">Composizione delle uscite</div>
-    ${strata(per, usc)}
-    ${falda(delta)}
+  <section class="card dep-card">
+    <div class="card-h"><h3 class="card-title">Da mettere da parte</h3><span class="muted sm">${monthName(fMonth)}</span></div>
+    <div class="dep-line"><span class="dep-k">${svg('download','ic-xs')} Conto Tasse</span><b class="dep-v">${eur(tasseTotal)}</b></div>
+    ${tasseItems.length?`<div class="dep-break">${tasseItems.map(x=>`<span>${escapeHtml(x.name)} ${eur(x.q)}</span>`).join('')}</div>`:`<div class="dep-break muted">niente da accantonare per le tasse questo mese</div>`}
+    <div class="dep-sep"></div>
+    ${goals.length?goals.map(g=>`<div class="dep-line"><span class="dep-k">${svg('target','ic-xs')} ${escapeHtml(g.name)}</span><b class="dep-v">${eur(g.m)}</b></div>`).join(''):`<div class="dep-break muted">nessun obiettivo di risparmio attivo</div>`}
+    <div class="dep-line total"><span class="dep-k">Totale da accantonare</span><b class="dep-v">${eur(total)}</b></div>
+    <p class="hint" style="margin-top:8px">Entrate previste ${eur(plan.inc)}. Dopo spese fisse, tasse e accantonamenti restano <b class="${resto>=0?'pos':'neg'}">${eur(resto)}</b> per le spese variabili del mese.</p>
   </section>
-  ${fixedCard}
-  ${scadCard}
-  <button class="btn primary block" data-act="mov-new">${svg('plus')} Aggiungi movimento</button>
   <button class="card liq-card" data-act="goto" data-view="patrimonio">
-    <span><span class="nudge-k">Liquidità disponibile</span><span class="muted sm"> · ${DATA.accounts.length} conti${np.vinc?` · ${eur(np.vinc)} vincolata`:''}</span></span>
+    <span><span class="nudge-k">Liquidità disponibile</span><span class="muted sm">${np.vinc?` · ${eur(np.vinc)} vincolata`:''}</span></span>
     <span class="liq-v">${eur(np.dispo)}</span>
   </button>
+  <button class="btn primary block" data-act="mov-new">${svg('plus')} Aggiungi movimento</button>
+  ${fixedCard}
+  ${scadCard}
   <section class="card">
     <div class="card-h"><h3 class="card-title">Ultimi movimenti</h3></div>
     ${recent.length ? `<div class="list">${recent.map(rowTx).join('')}</div>` : emptyState('Nessun movimento ancora. Tocca "Aggiungi movimento" per iniziare.')}

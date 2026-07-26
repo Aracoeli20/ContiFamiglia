@@ -416,3 +416,15 @@ code{font-family:ui-monospace,Menlo,monospace;font-size:.85em;background:var(--s
 .bk-status{background:var(--surface-2);border-radius:var(--r-sm);padding:8px 11px;margin-bottom:2px}
 .bk-status .calc-row{font-size:.84rem}
 .bk-status .calc-row.warn span{color:var(--terra)}
+
+/* ---------- v3.8 · home piano di versamento ---------- */
+.dep-card .dep-line{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 0;border-bottom:1px solid var(--line-2)}
+.dep-card .dep-line:last-of-type{border-bottom:0}
+.dep-k{display:inline-flex;align-items:center;gap:7px;font-size:.96rem;color:var(--ink)}
+.dep-v{font-variant-numeric:tabular-nums;font-size:1.02rem}
+.dep-break{display:flex;flex-wrap:wrap;gap:4px 10px;font-size:.78rem;color:var(--muted);padding:2px 0 8px 24px}
+.dep-break span{white-space:nowrap}
+.dep-sep{height:1px;background:var(--line);margin:2px 0}
+.dep-line.total{margin-top:2px;border-top:2px solid var(--line);border-bottom:0;padding-top:11px}
+.dep-line.total .dep-k{font-family:var(--serif);font-size:1.05rem}
+.dep-line.total .dep-v{font-family:var(--serif);font-size:1.3rem;font-weight:600}
