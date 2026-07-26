@@ -158,7 +158,7 @@ const svg = (k,cls='ic') => `<svg viewBox="0 0 24 24" class="${cls}" fill="none"
 /* ===================== Stato ===================== */
 let store=null, me=null, deferredPrompt=null;
 const DATA = { transactions:[], assets:[], snapshots:[], members:[], accounts:[], forecast:[], goals:[], categories:DEFAULT_CATEGORIES };
-let BUDGET = { needs:50, wants:30, save:20, startDate:'', cycleDay:1 };
+let BUDGET = { needs:50, wants:30, save:20, startDate:'', cycleDay:1, level:0 };
 let budgetSource='preventivo';
 const NEEDS_MACROS = ['incomprimibili','oggettive'];
 let catSeeded=false, accountsSeeded=false, fcSeeded=false, budgetSeeded=false;
@@ -205,7 +205,7 @@ function ensureData(){
   });
   subs.gl = store.subscribe('goals', a=>{ DATA.goals=[...a].sort((x,y)=>(x.order||0)-(y.order||0)); softRender(); });
   subs.bd = store.subscribeConfig ? store.subscribeConfig('budget', o=>{
-    if(o && isFinite(+o.needs)){ BUDGET={ needs:+o.needs, wants:+o.wants, save:+o.save, startDate:o.startDate||'', cycleDay:+o.cycleDay||1 }; }
+    if(o && isFinite(+o.needs)){ BUDGET={ needs:+o.needs, wants:+o.wants, save:+o.save, startDate:o.startDate||'', cycleDay:+o.cycleDay||1, level:+o.level||0 }; }
     else if(!budgetSeeded){ budgetSeeded=true; store.saveConfig && store.saveConfig('budget', BUDGET); }
     softRender();
   }) : null;
@@ -323,6 +323,18 @@ function rataPassivita(){
 }
 
 /* ===================== Obiettivi di risparmio ===================== */
+function avgIncomeRecent(n){
+  n=n||6; const now=curMonth(); const vals=[];
+  for(let i=1;i<=n;i++){ const ym=shiftMonth(now,-i); if(beforeStart(ym)) break; const v=sum(txMonth(ym).filter(countsIncome).map(t=>t.amount)); if(v>0) vals.push(v); }
+  return vals.length ? Math.round(sum(vals)/vals.length*100)/100 : 0;
+}
+function levelingInfo(ym){
+  const level=+BUDGET.level||0; if(level<=0) return null;
+  const prev=shiftMonth(ym,-1); if(beforeStart(prev)) return null;
+  const inc=Math.round(sum(txMonth(prev).filter(countsIncome).map(t=>t.amount))*100)/100;
+  if(inc<=0) return null;
+  return { prev, inc, level, move:Math.round((inc-level)*100)/100 };
+}
 function avgIncomeMonthly(){
   const now=curMonth(); const vals=[];
   for(let i=0;i<3;i++){ const ym=shiftMonth(now,-i); const v=sum(txMonth(ym).filter(countsIncome).map(t=>t.amount)); if(v>0) vals.push(v); }
@@ -538,6 +550,12 @@ function viewCruscotto(){
     <div class="dep-line total"><span class="dep-k">Totale da accantonare</span><b class="dep-v">${eur(total)}</b></div>
     <p class="hint" style="margin-top:8px">Entrate previste ${eur(plan.inc)}. Dopo spese fisse, tasse e accantonamenti restano <b class="${resto>=0?'pos':'neg'}">${eur(resto)}</b> per le spese variabili del mese.</p>
   </section>
+  ${(()=>{ const L=levelingInfo(fMonth); if(!L) return ''; const pos=L.move>=0;
+    return `<section class="card">
+    <div class="card-h"><h3 class="card-title">Livellamento</h3><span class="muted sm">da ${monthName(L.prev)}</span></div>
+    <p class="hint" style="margin-top:0">Il mese scorso sono entrati ${eur(L.inc)}. Per tenere ogni mese sul livello di ${eur(L.level)}:</p>
+    <div class="dep-line total"><span class="dep-k">${pos?'Metti in riserva':'Preleva dalla riserva'}</span><b class="dep-v ${pos?'pos':'neg'}">${eur(Math.abs(L.move))}</b></div>
+  </section>`; })()}
   <button class="card liq-card" data-act="goto" data-view="patrimonio">
     <span><span class="nudge-k">Liquidità disponibile</span><span class="muted sm">${np.vinc?` · ${eur(np.vinc)} vincolata`:''}</span></span>
     <span class="liq-v">${eur(np.dispo)}</span>
@@ -1041,6 +1059,8 @@ function viewImpostazioni(){
     <button class="btn ghost block" data-act="export" style="margin-top:8px">${svg('download')} Scarica copia ora (JSON)</button>
     <label class="field" style="margin-top:12px"><span>Inizio monitoraggio (giorno 0)</span><input id="cfg-start" type="date" data-act="startdate-set" value="${BUDGET.startDate||''}"></label>
     <label class="field" style="margin-top:8px"><span>Giorno di inizio ciclo (busta paga)</span><input id="cfg-cycle" type="number" inputmode="numeric" min="1" max="28" data-act="cycle-set" value="${cycleDay()}"></label>
+    <label class="field" style="margin-top:8px"><span>Livello mensile (livellamento entrate)</span><input id="cfg-level" type="number" inputmode="decimal" data-act="level-set" value="${+BUDGET.level||''}" placeholder="es. 3000 · 0 per disattivare"></label>
+    <p class="hint" style="margin-top:2px">Se lo imposti, la home ti dice quanto spostare da/verso una riserva per rendere i mesi uguali nonostante entrate irregolari (13ª, 730, B&B). ${avgIncomeRecent()>0?`Media entrate recenti: ${eur(avgIncomeRecent())}.`:''}</p>
     <p class="hint" style="margin-top:2px">Metti il giorno in cui arriva lo stipendio (es. 27): il "mese" diventa il tuo ciclo di paga (27→26), così ogni periodo contiene una busta all'inizio e chiude con un risparmio certo. Lascia 1 per il mese solare. Il giorno 0 esclude i periodi precedenti dai grafici e segnala come parziale quello iniziale.</p>
     <button class="btn ghost block" data-act="import" style="margin-top:8px">${svg('upload')} Importa / Ripristina (JSON)</button>
     <button class="btn ghost block" data-act="dedup" style="margin-top:8px">${svg('check')} Rimuovi duplicati (ripara import)</button>
@@ -1938,7 +1958,7 @@ async function importData(data){
     }
   }
   if(data.categories && store.saveCategories) await store.saveCategories(data.categories);
-  if(data.budget && store.saveConfig){ const b={ needs:+data.budget.needs||50, wants:+data.budget.wants||30, save:+data.budget.save||20, startDate:data.budget.startDate||'', cycleDay:+data.budget.cycleDay||1 }; BUDGET=b; await store.saveConfig('budget', b); }
+  if(data.budget && store.saveConfig){ const b={ needs:+data.budget.needs||50, wants:+data.budget.wants||30, save:+data.budget.save||20, startDate:data.budget.startDate||'', cycleDay:+data.budget.cycleDay||1, level:+data.budget.level||0 }; BUDGET=b; await store.saveConfig('budget', b); }
   return counts;
 }
 function buildBackup(){
@@ -2157,6 +2177,11 @@ function onChange(e){
     let d=parseInt(e.target.value,10); if(!isFinite(d)) d=1; d=Math.max(1,Math.min(28,d));
     BUDGET={ ...BUDGET, cycleDay:d };
     fMonth=periodOf(todayISO()); // re-sync current period with the new cycle
+    if(store.saveConfig) store.saveConfig('budget', BUDGET);
+    render();
+  }
+  else if(act==='level-set'){
+    BUDGET={ ...BUDGET, level:parseAmount(e.target.value)||0 };
     if(store.saveConfig) store.saveConfig('budget', BUDGET);
     render();
   }
