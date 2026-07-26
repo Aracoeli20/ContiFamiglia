@@ -273,11 +273,23 @@ function fcMonthly(it, y, mi){
   if(Object.prototype.hasOwnProperty.call(cells,key)) return +cells[key]||0;
   const arr=it.amounts||[]; return +arr[mi]||0;
 }
-function fcMonthlyPlan(it, y, mi){
-  if(it.spread && (it.kind||'ricorrente')==='ricorrente' && it.flow!=='entrata'){
-    let s=0; for(let m=0;m<12;m++) s+=fcMonthly(it,y,m);
-    return Math.round(s/12*100)/100;
+function fcSpreadQuota(it, y, mi){
+  const pays=[]; for(let m=0;m<12;m++){ const a=fcMonthly(it,y,m); if(a>0) pays.push({m,a}); }
+  if(!pays.length) return 0;
+  pays.sort((x,z)=>x.m-z.m); const n=pays.length; const K={};
+  for(let i=0;i<n;i++){ const prev = i>0 ? pays[i-1].m : pays[n-1].m-12; K[pays[i].m]=pays[i].m-prev; }
+  const targetAbs=y*12+mi; const sd=BUDGET.startDate;
+  const startAbs=(sd&&sd.length>=7)?(+sd.slice(0,4))*12+(+sd.slice(5,7)-1):-1e9;
+  let q=0;
+  for(const dy of [-1,0,1]) for(const pay of pays){
+    const P=(y+dy)*12+pay.m; const k=K[pay.m];
+    let ws=P-k+1; if(ws<startAbs) ws=startAbs; if(ws>P) continue;
+    if(targetAbs>=ws && targetAbs<=P) q+=pay.a/(P-ws+1);
   }
+  return Math.round(q*100)/100;
+}
+function fcMonthlyPlan(it, y, mi){
+  if(it.spread && (it.kind||'ricorrente')==='ricorrente' && it.flow!=='entrata') return fcSpreadQuota(it, y, mi);
   return fcMonthly(it, y, mi);
 }
 function fcActiveInYear(it,y){
@@ -1574,7 +1586,7 @@ function renderFcSheet(d){
       <label class="check"><input type="checkbox" id="fc-auto" ${d.autoPost?'checked':''}><span>Registra il movimento da solo alla data (quando apri l\u2019app)</span></label>
       <p class="hint" style="margin-top:-2px">Serve il giorno abituale. A telefono spento non è possibile: registra alla prima apertura dal giorno indicato.</p>` : ''}
       ${(!isInc && d.kind==='ricorrente') ? `<label class="check"><input type="checkbox" id="fc-spread" ${d.spread?'checked':''}><span>Accantona: spalma il totale annuo in quote mensili uguali${(()=>{const s=(d.amounts||[]).reduce((a,b)=>a+(+b||0),0); return s>0?` (≈ ${eur(Math.round(s/12*100)/100)}/mese · ${eur(Math.round(s*100)/100)}/anno)`:'';})()}</span></label>
-      <p class="hint" style="margin-top:-2px">Nel previsionale e nel 50/30/20 la spesa appare come quota mensile costante invece che a colpi. Il pagamento reale resta alla sua data (le "voci fisse" e il rendiconto non cambiano).</p>` : ''}
+      <p class="hint" style="margin-top:-2px">La spesa appare come quota mensile distribuita sui mesi che mancano a ogni scadenza (a partire dal giorno 0, non sui mesi già passati). Il pagamento reale resta alla sua data: "voci fisse" e rendiconto non cambiano.</p>` : ''}
       ${block}
       <div class="sheet-error" id="fc-err"></div>
       <div class="sheet-actions">
