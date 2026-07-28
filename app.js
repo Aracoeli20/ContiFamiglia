@@ -119,8 +119,8 @@ const txMonth = ym => DATA.transactions.filter(t=>periodOf(t.date)===ym);
 const signed = n => (n<0?'−':'') + eur(Math.abs(n));
 const isPL = t => (t.type==='uscita' || t.type==='entrata');
 const isMemoAcc = id => { const a=accountById(id); return !!(a && a.excludeNetWorth); };
-const countsIncome = t => t.type==='entrata' && !t.excludeFromTotals && !isMemoAcc(t.account);
-const countsExpense = t => t.type==='uscita' && !isMemoAcc(t.account);
+const countsIncome = t => t.type==='entrata' && !t.excludeFromTotals && !t.credit && !isMemoAcc(t.account);
+const countsExpense = t => t.type==='uscita' && !t.credit && !isMemoAcc(t.account);
 const isFuelSub = name => !!name && /benzin|carburant|riforniment|gasolio|diesel|metano|\bgpl\b/i.test(name);
 function vehicleList(){ const used=[...new Set(DATA.transactions.map(t=>t.vehicle).filter(Boolean))]; return [...new Set([...used,'Auto','Moto','Furgone','Scooter'])]; }
 
@@ -167,7 +167,7 @@ let view='cruscotto';
 let fMonth=curMonth(), fPerson='all', fType='all', fAccount='all', fYear=curYear();
 let modalOpen=false, pendingRender=false;
 let sheetType='uscita', movEditId=null, assetEditId=null, accEditId=null, fcEditId=null, goalEditId=null;
-let fixedDetailYm=null; let fxDate=null; const fxInFlight=new Set(); let backupRan=false; let txLoaded=false, autoPostRan=false;
+let fixedDetailYm=null; let fxDate=null; const fxInFlight=new Set(); let backupRan=false; let creditPageId=null; let txLoaded=false, autoPostRan=false;
 let opAccId=null, opMode='debit', gateTab='login';
 
 /* ===================== Boot ===================== */
@@ -219,12 +219,13 @@ async function seedAccounts(){ for(let i=0;i<DEFAULT_ACCOUNTS.length;i++){ const
 async function seedForecast(){ const y=curYear(); for(let i=0;i<DEFAULT_FORECAST.length;i++){ await store.add('forecast',{ name:DEFAULT_FORECAST[i], kind:'ricorrente', group:'', macro:'incomprimibili', sub:'', account:'', year:y, amounts:Array(12).fill(0), cells:{}, order:i }); } }
 function teardownData(){ Object.values(subs).forEach(u=>{ try{ u&&u(); }catch{} }); for(const k in subs) delete subs[k]; }
 function normalizeCats(c){ return { spese:{ incomprimibili:(c&&c.spese&&c.spese.incomprimibili)||[], oggettive:(c&&c.spese&&c.spese.oggettive)||[], superflue:(c&&c.spese&&c.spese.superflue)||[] }, entrate:(c&&c.entrate)||[] }; }
-function softRender(){ if(!me) return; if(!backupRan && (DATA.accounts.length||DATA.transactions.length)){ backupRan=true; autoBackup(); } if(!autoPostRan && txLoaded && DATA.forecast.length){ autoPostRan=true; autoMaterializeDue(); } if(modalOpen){ pendingRender=true; if(fixedDetailYm){ try{ openFixedDetail(fixedDetailYm); }catch(e){} } return; } render(); }
+function softRender(){ if(!me) return; if(!backupRan && (DATA.accounts.length||DATA.transactions.length)){ backupRan=true; autoBackup(); } if(!autoPostRan && txLoaded && DATA.forecast.length){ autoPostRan=true; autoMaterializeDue(); } if(modalOpen){ pendingRender=true; if(fixedDetailYm){ try{ openFixedDetail(fixedDetailYm); }catch(e){} } if(creditPageId){ try{ openCreditPage(creditPageId); }catch(e){} } return; } render(); }
 
 /* ===================== Calcoli conti / patrimonio ===================== */
 function computeBalances(){
   const bal={}; DATA.accounts.forEach(a=>bal[a.id]=+a.opening||0);
   DATA.transactions.forEach(t=>{
+    if(t.reimbursed) return; // crediti rimborsati: fuori dal saldo residuo
     const amt=+t.amount||0;
     if(t.type==='uscita'){ if(t.account&&bal[t.account]!=null) bal[t.account]-=amt; }
     else if(t.type==='entrata'){ if(t.account&&bal[t.account]!=null) bal[t.account]+=amt; }
@@ -512,7 +513,7 @@ const emptyState = msg => `<div class="empty">${escapeHtml(msg)}</div>`;
 function viewCruscotto(){
   const np = netWorthParts();
   const cs = carryStatus(fMonth);
-  const recent = DATA.transactions.slice(0,5);
+  const recent = DATA.transactions.filter(t=>!t.credit).slice(0,5);
   const y=+fMonth.slice(0,4), mi=+fMonth.slice(5,7)-1;
   // Conto Tasse = quote mensili delle voci fiscali spalmate
   const tmap={}; DATA.forecast.forEach(it=>{ if(it.spread && it.flow!=='entrata'){ const q=fcSpreadQuota(it,y,mi); if(q>0) tmap[it.name]=(tmap[it.name]||0)+q; } });
@@ -626,7 +627,7 @@ function rowRettifica(t){
 
 /* ===================== Vista: Movimenti ===================== */
 function viewMovimenti(){
-  let list = txMonth(fMonth);
+  let list = txMonth(fMonth).filter(t=>!t.credit);
   if(fType!=='all') list = list.filter(t=>t.type===fType);
   if(fAccount!=='all') list = list.filter(t=> t.account===fAccount || t.fromAccount===fAccount || t.toAccount===fAccount);
   if(fPerson!=='all') list = list.filter(t=> t.paidBy===fPerson && isPL(t));
@@ -1120,7 +1121,7 @@ function openSheet(html){
   const first=m.querySelector('input,select'); if(first) setTimeout(()=>first.focus(),140);
 }
 function closeSheet(){
-  modalOpen=false; movEditId=null; assetEditId=null; accEditId=null; fcEditId=null; goalEditId=null; fixedDetailYm=null; fxDate=null;
+  modalOpen=false; movEditId=null; assetEditId=null; accEditId=null; fcEditId=null; goalEditId=null; fixedDetailYm=null; fxDate=null; creditPageId=null;
   el('modal-root').innerHTML='';
   if(pendingRender){ pendingRender=false; render(); }
 }
@@ -1918,6 +1919,58 @@ function openFixedDetail(ym){
       ${cs.todo>0?`<button class="btn primary block" data-act="fixed-carry" data-year="${cs.year}" data-mi="${cs.mi}" style="margin-top:12px">${svg('download')} Inserisci tutte le mancanti (${cs.todo})</button>`:(items.length?`<div class="done-tag" style="justify-content:center;margin-top:12px">${svg('check','ic-xs')} Tutte inserite</div>`:'')}
     </div>`);
 }
+/* ===================== Registro credito (es. Aracoeli 20) ===================== */
+function creditEntries(accId){ return DATA.transactions.filter(t=>t.credit && t.account===accId).sort((a,b)=>(b.date||'').localeCompare(a.date||'')); }
+function openCreditPage(accId){
+  creditPageId=accId; const a=accountById(accId); if(!a) return;
+  const entries=creditEntries(accId);
+  const open=entries.filter(e=>!e.reimbursed), done=entries.filter(e=>e.reimbursed);
+  const outstanding=Math.round(sum(open.map(e=>+e.amount||0))*100)/100;
+  const doneTot=Math.round(sum(done.map(e=>+e.amount||0))*100)/100;
+  const row=(e)=>`<div class="cr-row${e.reimbursed?' done':''}">
+      <button class="cr-check" data-act="credit-toggle" data-id="${e.id}" aria-label="Segna rimborsato">${e.reimbursed?svg('check','ic-xs'):''}</button>
+      <div class="cr-main"><div class="cr-note">${escapeHtml(e.note||'Credito')}</div><div class="cr-date muted sm">${dayShort2(e.date)}${e.reimbursed?' · rimborsato':''}</div></div>
+      <div class="cr-amt">${eur(+e.amount||0)}</div>
+      <button class="iconbtn cr-del" data-act="credit-del" data-id="${e.id}" aria-label="Elimina">${svg('trash')}</button>
+    </div>`;
+  openSheet(`
+    <div class="sheet-h"><h3 class="sheet-title">${escapeHtml(a.name)}</h3><button class="iconbtn" data-act="sheet-close" aria-label="Chiudi">${svg('x')}</button></div>
+    <div class="sheet-body">
+      <div class="cr-total"><div class="cr-total-k">Credito da recuperare</div><div class="cr-total-v">${eur(outstanding)}</div>${doneTot>0?`<div class="muted sm">${eur(doneTot)} già rimborsati</div>`:''}</div>
+      <button class="btn primary block" data-act="credit-add" data-id="${accId}">${svg('plus')} Aggiungi credito</button>
+      <p class="hint">Segna la spunta quando il B&B ti rimborsa: la voce esce dal totale. Non serve registrare l'incasso sui tuoi conti — è un dare/avere che si azzera.</p>
+      ${open.length?`<div class="cr-list">${open.map(row).join('')}</div>`:emptyState('Nessun credito in sospeso.')}
+      ${done.length?`<div class="card-h" style="margin:14px 0 4px"><h4 class="card-title" style="font-size:1rem">Rimborsati</h4></div><div class="cr-list">${done.map(row).join('')}</div>`:''}
+    </div>`);
+}
+function openCreditAdd(accId){
+  openSheet(`
+    <div class="sheet-h"><h3 class="sheet-title">Nuovo credito</h3><button class="iconbtn" data-act="sheet-close" aria-label="Chiudi">${svg('x')}</button></div>
+    <div class="sheet-body">
+      <label class="field"><span>Importo (€)</span><input id="cr-amount" inputmode="decimal" placeholder="0,00"></label>
+      <label class="field"><span>Descrizione</span><input id="cr-note" placeholder="Es. spesa lenzuola, anticipo utenze"></label>
+      <label class="field"><span>Data</span><input id="cr-date" type="date" value="${todayISO()}"></label>
+      <div class="sheet-error" id="cr-err"></div>
+      <div class="sheet-actions"><button class="btn primary grow" data-act="credit-save" data-id="${accId}">${svg('check')} Salva</button></div>
+    </div>`);
+}
+async function saveCreditEntry(accId){
+  const v=id=>{ const e=el(id); return e?e.value:''; }; const err=el('cr-err');
+  const amt=parseAmount(v('cr-amount')); if(!(amt>0)){ if(err) err.textContent='Inserisci un importo.'; return; }
+  const rec={ type:'entrata', account:accId, amount:Math.round(amt*100)/100, date:v('cr-date')||todayISO(), note:(v('cr-note')||'Credito').trim(), credit:true, reimbursed:false, enteredBy:me.uid };
+  try{ await store.add('transactions', rec); creditPageId=accId; openCreditPage(accId); }
+  catch(e){ console.warn(e); if(err) err.textContent='Errore nel salvataggio.'; }
+}
+async function toggleCreditReimbursed(txId){
+  const t=DATA.transactions.find(x=>x.id===txId); if(!t) return;
+  try{ await store.update('transactions', txId, { reimbursed: !t.reimbursed }); if(creditPageId) openCreditPage(creditPageId); }
+  catch(e){ console.warn(e); }
+}
+async function deleteCreditEntry(txId){
+  if(!confirm('Eliminare questa voce di credito?')) return;
+  try{ await store.remove('transactions', txId); if(creditPageId) openCreditPage(creditPageId); }
+  catch(e){ console.warn(e); }
+}
 function openImport(){
   let inp=el('import-file');
   if(!inp){
@@ -2076,7 +2129,11 @@ function onClick(e){
     case 'mov-save': saveMov(); break;
     case 'mov-delete': deleteMov(ds.id); break;
     case 'seg-type': { const d=readMov(); d.type=ds.type; renderMovSheet(d); break; }
-    case 'acc-open': openAccountSheet(ds.id); break;
+    case 'acc-open': { const a=accountById(ds.id); if(a && a.kind==='credito') openCreditPage(ds.id); else openAccountSheet(ds.id); break; }
+    case 'credit-add': openCreditAdd(ds.id); break;
+    case 'credit-save': saveCreditEntry(ds.id); break;
+    case 'credit-toggle': toggleCreditReimbursed(ds.id); break;
+    case 'credit-del': deleteCreditEntry(ds.id); break;
     case 'acc-credit': openAccountOp(ds.id,'credit'); break;
     case 'acc-debit': openAccountOp(ds.id,'debit'); break;
     case 'acc-transfer': openTransfer(ds.id); break;
