@@ -119,8 +119,10 @@ const txMonth = ym => DATA.transactions.filter(t=>periodOf(t.date)===ym);
 const signed = n => (n<0?'−':'') + eur(Math.abs(n));
 const isPL = t => (t.type==='uscita' || t.type==='entrata');
 const isMemoAcc = id => { const a=accountById(id); return !!(a && a.excludeNetWorth); };
-const countsIncome = t => t.type==='entrata' && !t.excludeFromTotals && !t.credit && !isMemoAcc(t.account);
-const countsExpense = t => t.type==='uscita' && !t.credit && !isMemoAcc(t.account);
+const isCreditAcc = id => { const a=accountById(id); return !!(a && a.kind==='credito'); };
+const isCreditTx = t => isCreditAcc(t.account) || isCreditAcc(t.fromAccount) || isCreditAcc(t.toAccount);
+const countsIncome = t => t.type==='entrata' && !t.excludeFromTotals && !isCreditTx(t) && !isMemoAcc(t.account);
+const countsExpense = t => t.type==='uscita' && !isCreditTx(t) && !isMemoAcc(t.account);
 const isFuelSub = name => !!name && /benzin|carburant|riforniment|gasolio|diesel|metano|\bgpl\b/i.test(name);
 function vehicleList(){ const used=[...new Set(DATA.transactions.map(t=>t.vehicle).filter(Boolean))]; return [...new Set([...used,'Auto','Moto','Furgone','Scooter'])]; }
 
@@ -513,7 +515,7 @@ const emptyState = msg => `<div class="empty">${escapeHtml(msg)}</div>`;
 function viewCruscotto(){
   const np = netWorthParts();
   const cs = carryStatus(fMonth);
-  const recent = DATA.transactions.filter(t=>!t.credit).slice(0,5);
+  const recent = DATA.transactions.filter(t=>!isCreditTx(t)).slice(0,5);
   const y=+fMonth.slice(0,4), mi=+fMonth.slice(5,7)-1;
   // Conto Tasse = quote mensili delle voci fiscali spalmate
   const tmap={}; DATA.forecast.forEach(it=>{ if(it.spread && it.flow!=='entrata'){ const q=fcSpreadQuota(it,y,mi); if(q>0) tmap[it.name]=(tmap[it.name]||0)+q; } });
@@ -627,7 +629,7 @@ function rowRettifica(t){
 
 /* ===================== Vista: Movimenti ===================== */
 function viewMovimenti(){
-  let list = txMonth(fMonth).filter(t=>!t.credit);
+  let list = txMonth(fMonth).filter(t=>!isCreditTx(t));
   if(fType!=='all') list = list.filter(t=>t.type===fType);
   if(fAccount!=='all') list = list.filter(t=> t.account===fAccount || t.fromAccount===fAccount || t.toAccount===fAccount);
   if(fPerson!=='all') list = list.filter(t=> t.paidBy===fPerson && isPL(t));
@@ -1920,17 +1922,19 @@ function openFixedDetail(ym){
     </div>`);
 }
 /* ===================== Registro credito (es. Aracoeli 20) ===================== */
-function creditEntries(accId){ return DATA.transactions.filter(t=>t.credit && t.account===accId).sort((a,b)=>(b.date||'').localeCompare(a.date||'')); }
+function creditEntries(accId){ return DATA.transactions.filter(t=>t.account===accId).sort((a,b)=>(b.date||'').localeCompare(a.date||'')); }
 function openCreditPage(accId){
   creditPageId=accId; const a=accountById(accId); if(!a) return;
   const entries=creditEntries(accId);
   const open=entries.filter(e=>!e.reimbursed), done=entries.filter(e=>e.reimbursed);
-  const outstanding=Math.round(sum(open.map(e=>+e.amount||0))*100)/100;
+  const outstanding=Math.round((computeBalances()[accId]||0)*100)/100;
   const doneTot=Math.round(sum(done.map(e=>+e.amount||0))*100)/100;
+  const opening=Math.round((+a.opening||0)*100)/100;
+  const lbl=e=>e.note||e.sub||(e.type==='entrata'?'Credito':'Movimento');
   const row=(e)=>`<div class="cr-row${e.reimbursed?' done':''}">
       <button class="cr-check" data-act="credit-toggle" data-id="${e.id}" aria-label="Segna rimborsato">${e.reimbursed?svg('check','ic-xs'):''}</button>
-      <div class="cr-main"><div class="cr-note">${escapeHtml(e.note||'Credito')}</div><div class="cr-date muted sm">${dayShort2(e.date)}${e.reimbursed?' · rimborsato':''}</div></div>
-      <div class="cr-amt">${eur(+e.amount||0)}</div>
+      <div class="cr-main"><div class="cr-note">${escapeHtml(lbl(e))}</div><div class="cr-date muted sm">${dayShort2(e.date)}${e.reimbursed?' · rimborsato':''}</div></div>
+      <div class="cr-amt">${e.type==='uscita'?'−':''}${eur(+e.amount||0)}</div>
       <button class="iconbtn cr-del" data-act="credit-del" data-id="${e.id}" aria-label="Elimina">${svg('trash')}</button>
     </div>`;
   openSheet(`
@@ -1938,10 +1942,21 @@ function openCreditPage(accId){
     <div class="sheet-body">
       <div class="cr-total"><div class="cr-total-k">Credito da recuperare</div><div class="cr-total-v">${eur(outstanding)}</div>${doneTot>0?`<div class="muted sm">${eur(doneTot)} già rimborsati</div>`:''}</div>
       <button class="btn primary block" data-act="credit-add" data-id="${accId}">${svg('plus')} Aggiungi credito</button>
-      <p class="hint">Segna la spunta quando il B&B ti rimborsa: la voce esce dal totale. Non serve registrare l'incasso sui tuoi conti — è un dare/avere che si azzera.</p>
+      ${opening!==0?`<button class="btn ghost block" data-act="credit-openconv" data-id="${accId}" style="margin-top:8px">${svg('download')} Trasforma il saldo iniziale (${eur(opening)}) in voce</button>`:''}
+      <p class="hint">Ogni movimento su questo conto è un credito verso di te. Segna la spunta quando il B&B ti rimborsa: la voce esce dal totale. Non serve registrare l'incasso sui tuoi conti — è un dare/avere che si azzera.</p>
       ${open.length?`<div class="cr-list">${open.map(row).join('')}</div>`:emptyState('Nessun credito in sospeso.')}
       ${done.length?`<div class="card-h" style="margin:14px 0 4px"><h4 class="card-title" style="font-size:1rem">Rimborsati</h4></div><div class="cr-list">${done.map(row).join('')}</div>`:''}
     </div>`);
+}
+async function convertCreditOpening(accId){
+  const a=accountById(accId); if(!a) return; const opening=Math.round((+a.opening||0)*100)/100;
+  if(opening===0) return;
+  if(!confirm(`Trasformare il saldo iniziale di ${eur(opening)} in una voce di credito?\nIl saldo del conto non cambia, ma diventa una riga con la spunta.`)) return;
+  try{
+    await store.add('transactions',{ type: opening>0?'entrata':'uscita', account:accId, amount:Math.abs(opening), date:todayISO(), note:'Saldo iniziale', credit:true, reimbursed:false, enteredBy:me.uid });
+    await store.update('accounts', accId, { opening:0 });
+    if(creditPageId) openCreditPage(creditPageId);
+  }catch(e){ console.warn(e); toast('Errore nella conversione'); }
 }
 function openCreditAdd(accId){
   openSheet(`
@@ -2134,6 +2149,7 @@ function onClick(e){
     case 'credit-save': saveCreditEntry(ds.id); break;
     case 'credit-toggle': toggleCreditReimbursed(ds.id); break;
     case 'credit-del': deleteCreditEntry(ds.id); break;
+    case 'credit-openconv': convertCreditOpening(ds.id); break;
     case 'acc-credit': openAccountOp(ds.id,'credit'); break;
     case 'acc-debit': openAccountOp(ds.id,'debit'); break;
     case 'acc-transfer': openTransfer(ds.id); break;
