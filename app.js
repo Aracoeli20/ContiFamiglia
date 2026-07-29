@@ -1931,21 +1931,31 @@ function openCreditPage(accId){
   const doneTot=Math.round(sum(done.map(e=>+e.amount||0))*100)/100;
   const opening=Math.round((+a.opening||0)*100)/100;
   const lbl=e=>e.note||e.sub||(e.type==='entrata'?'Credito':'Movimento');
-  const row=(e)=>`<div class="cr-row${e.reimbursed?' done':''}">
-      <button class="cr-check" data-act="credit-toggle" data-id="${e.id}" aria-label="Segna rimborsato">${e.reimbursed?svg('check','ic-xs'):''}</button>
-      <div class="cr-main"><div class="cr-note">${escapeHtml(lbl(e))}</div><div class="cr-date muted sm">${dayShort2(e.date)}${e.reimbursed?' · rimborsato':''}</div></div>
-      <div class="cr-amt">${e.type==='uscita'?'−':''}${eur(+e.amount||0)}</div>
-      <button class="iconbtn cr-del" data-act="credit-del" data-id="${e.id}" aria-label="Elimina">${svg('trash')}</button>
+  const row=(e)=>{
+    const chkStyle=`flex:0 0 auto;width:32px;height:32px;border-radius:50%;border:2px solid var(--acqua,#3E6B63);background:${e.reimbursed?'var(--acqua,#3E6B63)':'#fff'};color:#fff;display:flex;align-items:center;justify-content:center;padding:0;cursor:pointer`;
+    return `<div style="display:flex;align-items:center;gap:12px;padding:11px 12px;background:var(--surface-2,#efe9dd);border-radius:12px;margin-bottom:8px;${e.reimbursed?'opacity:.6;':''}">
+      <button data-act="credit-toggle" data-id="${e.id}" aria-label="Segna rimborsato" style="${chkStyle}">${e.reimbursed?svg('check','ic-xs'):''}</button>
+      <div style="flex:1 1 auto;min-width:0">
+        <div style="font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;${e.reimbursed?'text-decoration:line-through':''}">${escapeHtml(lbl(e))}</div>
+        <div style="font-size:.78rem;color:var(--muted,#8a8275);margin-top:2px">${dayShort2(e.date)}${e.reimbursed?' · rimborsato':''}</div>
+      </div>
+      <div style="flex:0 0 auto;font-weight:600;white-space:nowrap">${e.type==='uscita'?'−':''}${eur(+e.amount||0)}</div>
+      <button data-act="credit-del" data-id="${e.id}" aria-label="Elimina" style="flex:0 0 auto;background:none;border:0;opacity:.4;padding:6px;cursor:pointer;color:var(--ink,#2a2a2a)">${svg('trash')}</button>
     </div>`;
+  };
   openSheet(`
     <div class="sheet-h"><h3 class="sheet-title">${escapeHtml(a.name)}</h3><button class="iconbtn" data-act="sheet-close" aria-label="Chiudi">${svg('x')}</button></div>
     <div class="sheet-body">
-      <div class="cr-total"><div class="cr-total-k">Credito da recuperare</div><div class="cr-total-v">${eur(outstanding)}</div>${doneTot>0?`<div class="muted sm">${eur(doneTot)} già rimborsati</div>`:''}</div>
+      <div style="text-align:center;padding:4px 0 14px">
+        <div style="font-size:.82rem;color:var(--muted,#8a8275)">Credito da recuperare</div>
+        <div style="font-family:var(--serif,Georgia,serif);font-size:2.1rem;font-weight:600;color:var(--terra,#A6533F);line-height:1.2">${eur(outstanding)}</div>
+        ${doneTot>0?`<div style="font-size:.82rem;color:var(--muted,#8a8275)">${eur(doneTot)} già rimborsati</div>`:''}
+      </div>
       <button class="btn primary block" data-act="credit-add" data-id="${accId}">${svg('plus')} Aggiungi credito</button>
       ${opening!==0?`<button class="btn ghost block" data-act="credit-openconv" data-id="${accId}" style="margin-top:8px">${svg('download')} Trasforma il saldo iniziale (${eur(opening)}) in voce</button>`:''}
-      <p class="hint">Ogni movimento su questo conto è un credito verso di te. Segna la spunta quando il B&B ti rimborsa: la voce esce dal totale. Non serve registrare l'incasso sui tuoi conti — è un dare/avere che si azzera.</p>
-      ${open.length?`<div class="cr-list">${open.map(row).join('')}</div>`:emptyState('Nessun credito in sospeso.')}
-      ${done.length?`<div class="card-h" style="margin:14px 0 4px"><h4 class="card-title" style="font-size:1rem">Rimborsati</h4></div><div class="cr-list">${done.map(row).join('')}</div>`:''}
+      <p style="font-size:.82rem;color:var(--muted,#8a8275);line-height:1.4;margin:10px 0 4px">Tocca il <b>cerchietto</b> a sinistra quando il B&B ti rimborsa una voce: si spunta, la riga esce dal totale e scende tra i "Rimborsati". Il cestino invece la cancella del tutto.</p>
+      ${open.length?`<div style="margin-top:10px">${open.map(row).join('')}</div>`:emptyState('Nessun credito in sospeso.')}
+      ${done.length?`<div style="font-family:var(--serif,Georgia,serif);font-size:1.05rem;margin:16px 0 8px">Rimborsati</div><div>${done.map(row).join('')}</div>`:''}
     </div>`);
 }
 async function convertCreditOpening(accId){
