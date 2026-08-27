@@ -160,7 +160,7 @@ const svg = (k,cls='ic') => `<svg viewBox="0 0 24 24" class="${cls}" fill="none"
 /* ===================== Stato ===================== */
 let store=null, me=null, deferredPrompt=null;
 const DATA = { transactions:[], assets:[], snapshots:[], members:[], accounts:[], forecast:[], goals:[], categories:DEFAULT_CATEGORIES };
-let BUDGET = { needs:50, wants:30, save:20, startDate:'', cycleDay:1, level:0 };
+let BUDGET = { needs:50, wants:30, save:20, startDate:'', cycleDay:1, level:0, realSal:{} };
 let budgetSource='preventivo';
 const NEEDS_MACROS = ['incomprimibili','oggettive'];
 let catSeeded=false, accountsSeeded=false, fcSeeded=false, budgetSeeded=false;
@@ -207,7 +207,7 @@ function ensureData(){
   });
   subs.gl = store.subscribe('goals', a=>{ DATA.goals=[...a].sort((x,y)=>(x.order||0)-(y.order||0)); softRender(); });
   subs.bd = store.subscribeConfig ? store.subscribeConfig('budget', o=>{
-    if(o && isFinite(+o.needs)){ BUDGET={ needs:+o.needs, wants:+o.wants, save:+o.save, startDate:o.startDate||'', cycleDay:+o.cycleDay||1, level:+o.level||0 }; }
+    if(o && isFinite(+o.needs)){ BUDGET={ needs:+o.needs, wants:+o.wants, save:+o.save, startDate:o.startDate||'', cycleDay:+o.cycleDay||1, level:+o.level||0, realSal:(o.realSal&&typeof o.realSal==='object')?o.realSal:{} }; }
     else if(!budgetSeeded){ budgetSeeded=true; store.saveConfig && store.saveConfig('budget', BUDGET); }
     softRender();
   }) : null;
@@ -498,7 +498,6 @@ function shell(content){
     <main class="content" id="content">${content}</main>
     <nav class="tabbar" role="tablist">
       ${tab('cruscotto','Home','home')}
-      ${tab('movimenti','Movimenti','list')}
       ${tab('previsionale','Previsionale','calendar')}
       ${tab('delta','Delta','delta')}
       ${tab('patrimonio','Patrimonio','columns')}
@@ -506,7 +505,7 @@ function shell(content){
   </div>`;
 }
 const tab = (k,label,icon) => `<button class="tab${view===k?' active':''}" data-act="goto" data-view="${k}" role="tab" aria-selected="${view===k}">${svg(icon)}<span>${label}</span></button>`;
-const viewHtml = () => ({ movimenti:viewMovimenti, previsionale:viewPrevisionale, delta:viewDelta, patrimonio:viewPatrimonio, impostazioni:viewImpostazioni }[view] || viewCruscotto)();
+const viewHtml = () => ({ previsionale:viewPrevisionale, delta:viewDelta, patrimonio:viewPatrimonio, impostazioni:viewImpostazioni }[view] || viewCruscotto)();
 const monthNav = () => `<div class="monthnav"><button class="iconbtn" data-act="month" data-dir="-1" aria-label="Mese precedente">${svg('chevL')}</button><span class="m">${monthName(fMonth)}${cycleDay()>1?`<span class="m-range">${periodLabel(fMonth)}</span>`:''}</span><button class="iconbtn" data-act="month" data-dir="1" aria-label="Mese successivo">${svg('chevR')}</button></div>`;
 const yearNav = () => `<div class="monthnav"><button class="iconbtn" data-act="year" data-dir="-1" aria-label="Anno precedente">${svg('chevL')}</button><span class="m">${fYear}</span><button class="iconbtn" data-act="year" data-dir="1" aria-label="Anno successivo">${svg('chevR')}</button></div>`;
 const emptyState = msg => `<div class="empty">${escapeHtml(msg)}</div>`;
@@ -514,62 +513,64 @@ const emptyState = msg => `<div class="empty">${escapeHtml(msg)}</div>`;
 /* ===================== Vista: Cruscotto ===================== */
 function viewCruscotto(){
   const np = netWorthParts();
-  const cs = carryStatus(fMonth);
-  const recent = DATA.transactions.filter(t=>!isCreditTx(t)).slice(0,5);
   const y=+fMonth.slice(0,4), mi=+fMonth.slice(5,7)-1;
-  // Conto Tasse = quote mensili delle voci fiscali spalmate
   const tmap={}; DATA.forecast.forEach(it=>{ if(it.spread && it.flow!=='entrata'){ const q=fcSpreadQuota(it,y,mi); if(q>0) tmap[it.name]=(tmap[it.name]||0)+q; } });
   const tasseItems=Object.entries(tmap).map(([name,q])=>({name,q:Math.round(q*100)/100})).sort((a,b)=>b.q-a.q);
   const tasseTotal=Math.round(sum(tasseItems.map(x=>x.q))*100)/100;
-  // Accantonamenti = obiettivi di risparmio (quota mensile) verso i loro conti
   const goals=DATA.goals.map(g=>{ const m=(+g.monthly>0)?+g.monthly:(goalStats(g).quotaFromDue||0); return { name:(accountById(g.account)||{}).name||g.name, m:Math.round(m*100)/100 }; }).filter(g=>g.m>0);
   const goalsTotal=Math.round(sum(goals.map(g=>g.m))*100)/100;
-  const total=Math.round((tasseTotal+goalsTotal)*100)/100;
   const plan=plannedBudgetMonth(fMonth);
-  const resto=Math.round((plan.inc - plan.needs - plan.wants - goalsTotal)*100)/100;
+  const fixedExp=Math.round((plan.needs + plan.wants - tasseTotal)*100)/100;
+  const incVals=DATA.forecast.filter(it=>it.flow==='entrata').map(it=>fcMonthlyPlan(it,y,mi)).filter(v=>v>0);
+  const salaryV=incVals.length?Math.max(...incVals):0;
+  const otherInc=Math.round((sum(incVals)-salaryV)*100)/100;
+  const realSal=+((BUDGET.realSal||{})[fMonth])||0;
+  const hasReal=realSal>0;
+  const totalInc=Math.round(((hasReal?realSal:salaryV)+otherInc)*100)/100;
+  const spendable=Math.round((totalInc - fixedExp - tasseTotal - goalsTotal)*100)/100;
+  const accTotal=Math.round((tasseTotal+goalsTotal)*100)/100;
+  // helper righe (stile incorporato, indipendente da style.css)
+  const L=(k,v,o={})=>`<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:${o.pad||'7px 0'};${o.border?'border-top:1px solid var(--line,#e3dccc);':''}${o.big?'border-top:2px solid var(--line,#e3dccc);padding-top:11px;margin-top:2px;':''}"><span style="${o.big?'font-family:var(--serif,Georgia,serif);font-size:1.05rem;':''}${o.bold?'font-weight:600;':''}color:var(--ink,#2a2a2a)">${k}</span><b style="font-variant-numeric:tabular-nums;${o.big?'font-family:var(--serif,Georgia,serif);font-size:1.35rem;font-weight:600;':''}${o.cls==='pos'?'color:var(--verde,#3E6B63);':''}${o.cls==='neg'?'color:var(--terra,#A6533F);':''}">${v}</b></div>`;
+  const brk=items=>items.length?`<div style="display:flex;flex-wrap:wrap;gap:3px 10px;font-size:.77rem;color:var(--muted,#8a8275);padding:0 0 6px 2px">${items.map(x=>`<span>${escapeHtml(x.name)} ${eur(x.q||x.m)}</span>`).join('')}</div>`:'';
+  const sep=`<div style="height:1px;background:var(--line,#e3dccc);margin:5px 0"></div>`;
   const scad = upcomingDeadlines(30);
   const scadCard = scad.length ? `
     <section class="card">
       <div class="card-h"><h3 class="card-title">${svg('bell','ic-xs')} In scadenza</h3><button class="btn ghost sm" data-act="goto" data-view="previsionale">Tutte</button></div>
       <div class="scad-list">${scad.slice(0,3).map(scadenzaRow).join('')}</div>
     </section>` : '';
-  const fixedCard = cs.plannedCount>0 ? `
-    <button class="card nudge nudge-btn" data-act="fixed-detail" data-ym="${fMonth}">
-      <div class="nudge-row"><div>
-        <div class="nudge-k">Voci fisse di ${monthName(fMonth).split(' ')[0].toLowerCase()}</div>
-        <div class="nudge-v">${cs.carried} di ${cs.plannedCount} inserite <span class="muted sm">· ${eur(cs.plannedTot)} previste</span></div>
-      </div>
-      ${cs.todo>0 ? `<span class="nudge-cta">${cs.todo} da inserire ${svg('chevR','ic-xs')}</span>` : `<span class="done-tag">${svg('check','ic-xs')} tutte</span>`}
-      </div>
-    </button>` : '';
   return `
   ${monthNav()}
-  <section class="card dep-card">
-    <div class="card-h"><h3 class="card-title">Da mettere da parte</h3><span class="muted sm">${monthName(fMonth)}</span></div>
-    <div class="dep-line"><span class="dep-k">${svg('download','ic-xs')} Conto Tasse</span><b class="dep-v">${eur(tasseTotal)}</b></div>
-    ${tasseItems.length?`<div class="dep-break">${tasseItems.map(x=>`<span>${escapeHtml(x.name)} ${eur(x.q)}</span>`).join('')}</div>`:`<div class="dep-break muted">niente da accantonare per le tasse questo mese</div>`}
-    <div class="dep-sep"></div>
-    ${goals.length?goals.map(g=>`<div class="dep-line"><span class="dep-k">${svg('target','ic-xs')} ${escapeHtml(g.name)}</span><b class="dep-v">${eur(g.m)}</b></div>`).join(''):`<div class="dep-break muted">nessun obiettivo di risparmio attivo</div>`}
-    <div class="dep-line total"><span class="dep-k">Totale da accantonare</span><b class="dep-v">${eur(total)}</b></div>
-    <p class="hint" style="margin-top:8px">Entrate previste ${eur(plan.inc)}. Dopo spese fisse, tasse e accantonamenti restano <b class="${resto>=0?'pos':'neg'}">${eur(resto)}</b> per le spese variabili del mese.</p>
+  <section class="card">
+    <div class="card-h"><h3 class="card-title">Preventivo del mese</h3><span class="muted sm">${monthName(fMonth)}</span></div>
+    <label class="field"><span>Stipendio reale ricevuto</span><input id="prev-sal" inputmode="decimal" data-act="realsal-set" value="${hasReal?realSal:''}" placeholder="es. 2169 · da inserire il giorno della busta"></label>
+    ${L(hasReal?'Stipendio reale':'Stipendio previsto', eur(hasReal?realSal:salaryV))}
+    ${otherInc>0?L('Altre entrate previste', eur(otherInc)):''}
+    ${L('Entrate totali', eur(totalInc), {border:true,bold:true})}
+    ${sep}
+    ${L('− Spese fisse', eur(fixedExp))}
+    ${L('− Conto Tasse', eur(tasseTotal))}
+    ${brk(tasseItems)}
+    ${L('− Accantonamento risparmi', eur(goalsTotal))}
+    ${brk(goals)}
+    ${L('Da spendere questo mese', eur(spendable), {big:true, cls:spendable>=0?'pos':'neg'})}
+    ${!hasReal
+      ? `<p class="hint" style="margin-top:8px">Sto usando lo stipendio <b>previsto</b> (${eur(salaryV)}). Inserisci quello <b>reale</b> ricevuto per il calcolo esatto del mese.</p>`
+      : (spendable<0
+        ? `<p class="hint" style="margin-top:8px"><b style="color:var(--terra,#A6533F)">Mancano ${eur(-spendable)}:</b> lo stipendio di questo mese non copre spese e accantonamenti. Attingi alla riserva o riduci un accantonamento.</p>`
+        : `<p class="hint" style="margin-top:8px">Da spostare sui conti di accantonamento: <b>${eur(accTotal)}</b> (Tasse ${eur(tasseTotal)} + obiettivi ${eur(goalsTotal)}).</p>`)}
   </section>
-  ${(()=>{ const L=levelingInfo(fMonth); if(!L) return ''; const pos=L.move>=0;
+  ${(()=>{ const Lv=levelingInfo(fMonth); if(!Lv) return ''; const pos=Lv.move>=0;
     return `<section class="card">
-    <div class="card-h"><h3 class="card-title">Livellamento</h3><span class="muted sm">da ${monthName(L.prev)}</span></div>
-    <p class="hint" style="margin-top:0">Il mese scorso sono entrati ${eur(L.inc)}. Per tenere ogni mese sul livello di ${eur(L.level)}:</p>
-    <div class="dep-line total"><span class="dep-k">${pos?'Metti in riserva':'Preleva dalla riserva'}</span><b class="dep-v ${pos?'pos':'neg'}">${eur(Math.abs(L.move))}</b></div>
+    <div class="card-h"><h3 class="card-title">Livellamento</h3><span class="muted sm">da ${monthName(Lv.prev)}</span></div>
+    <p class="hint" style="margin-top:0">Il mese scorso sono entrati ${eur(Lv.inc)}. Per tenere ogni mese sul livello di ${eur(Lv.level)}:</p>
+    ${L(pos?'Metti in riserva':'Preleva dalla riserva', eur(Math.abs(Lv.move)), {big:true, cls:pos?'pos':'neg'})}
   </section>`; })()}
   <button class="card liq-card" data-act="goto" data-view="patrimonio">
     <span><span class="nudge-k">Liquidità disponibile</span><span class="muted sm">${np.vinc?` · ${eur(np.vinc)} vincolata`:''}</span></span>
     <span class="liq-v">${eur(np.dispo)}</span>
   </button>
-  <button class="btn primary block" data-act="mov-new">${svg('plus')} Aggiungi movimento</button>
-  ${fixedCard}
-  ${scadCard}
-  <section class="card">
-    <div class="card-h"><h3 class="card-title">Ultimi movimenti</h3></div>
-    ${recent.length ? `<div class="list">${recent.map(rowTx).join('')}</div>` : emptyState('Nessun movimento ancora. Tocca "Aggiungi movimento" per iniziare.')}
-  </section>`;
+  ${scadCard}`;
 }
 function strata(per,total){
   if(total<=0) return `<div class="empty-strata">Nessuna uscita in ${monthName(fMonth).toLowerCase()}.</div>`;
@@ -2036,7 +2037,7 @@ async function importData(data){
     }
   }
   if(data.categories && store.saveCategories) await store.saveCategories(data.categories);
-  if(data.budget && store.saveConfig){ const b={ needs:+data.budget.needs||50, wants:+data.budget.wants||30, save:+data.budget.save||20, startDate:data.budget.startDate||'', cycleDay:+data.budget.cycleDay||1, level:+data.budget.level||0 }; BUDGET=b; await store.saveConfig('budget', b); }
+  if(data.budget && store.saveConfig){ const b={ needs:+data.budget.needs||50, wants:+data.budget.wants||30, save:+data.budget.save||20, startDate:data.budget.startDate||'', cycleDay:+data.budget.cycleDay||1, level:+data.budget.level||0, realSal:(data.budget.realSal&&typeof data.budget.realSal==='object')?data.budget.realSal:{} }; BUDGET=b; await store.saveConfig('budget', b); }
   return counts;
 }
 function buildBackup(){
@@ -2265,6 +2266,13 @@ function onChange(e){
   }
   else if(act==='level-set'){
     BUDGET={ ...BUDGET, level:parseAmount(e.target.value)||0 };
+    if(store.saveConfig) store.saveConfig('budget', BUDGET);
+    render();
+  }
+  else if(act==='realsal-set'){
+    const v=parseAmount(e.target.value); const map={ ...(BUDGET.realSal||{}) };
+    if(v>0) map[fMonth]=Math.round(v*100)/100; else delete map[fMonth];
+    BUDGET={ ...BUDGET, realSal:map };
     if(store.saveConfig) store.saveConfig('budget', BUDGET);
     render();
   }
