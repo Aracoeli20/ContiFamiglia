@@ -170,7 +170,7 @@ let fMonth=curMonth(), fPerson='all', fType='all', fAccount='all', fYear=curYear
 let modalOpen=false, pendingRender=false;
 let sheetType='uscita', movEditId=null, assetEditId=null, accEditId=null, fcEditId=null, goalEditId=null;
 let fixedDetailYm=null; let fxDate=null; const fxInFlight=new Set(); let backupRan=false; let creditPageId=null; let txLoaded=false, autoPostRan=false;
-let cardCatSheet=null; let CARDCATS={};
+let cardCatSheet=null; let CARDCATS={}; let cardMonth=null;
 let opAccId=null, opMode='debit', gateTab='login';
 
 /* ===================== Boot ===================== */
@@ -496,12 +496,13 @@ function shell(content){
     <nav class="tabbar" role="tablist">
       ${tab('cruscotto','Home','home')}
       ${tab('previsionale','Previsionale','calendar')}
+      ${tab('carta','Carta','card')}
       ${tab('patrimonio','Patrimonio','columns')}
     </nav>
   </div>`;
 }
 const tab = (k,label,icon) => `<button class="tab${view===k?' active':''}" data-act="goto" data-view="${k}" role="tab" aria-selected="${view===k}">${svg(icon)}<span>${label}</span></button>`;
-const viewHtml = () => ({ previsionale:viewPrevisionale, patrimonio:viewPatrimonio, impostazioni:viewImpostazioni }[view] || viewCruscotto)();
+const viewHtml = () => ({ previsionale:viewPrevisionale, carta:viewCarta, patrimonio:viewPatrimonio, impostazioni:viewImpostazioni }[view] || viewCruscotto)();
 const monthNav = () => `<div class="monthnav"><button class="iconbtn" data-act="month" data-dir="-1" aria-label="Mese precedente">${svg('chevL')}</button><span class="m">${monthName(fMonth)}${cycleDay()>1?`<span class="m-range">${periodLabel(fMonth)}</span>`:''}</span><button class="iconbtn" data-act="month" data-dir="1" aria-label="Mese successivo">${svg('chevR')}</button></div>`;
 const yearNav = () => `<div class="monthnav"><button class="iconbtn" data-act="year" data-dir="-1" aria-label="Anno precedente">${svg('chevL')}</button><span class="m">${fYear}</span><button class="iconbtn" data-act="year" data-dir="1" aria-label="Anno successivo">${svg('chevR')}</button></div>`;
 const emptyState = msg => `<div class="empty">${escapeHtml(msg)}</div>`;
@@ -604,9 +605,12 @@ async function importNexiFiles(fileList){
   toast(added?`Importati ${added} movimenti${dup?` · ${dup} gi\u00E0 presenti`:''}`:`Gi\u00E0 tutti presenti (${dup})`);
   softRender();
 }
-const cardTxOfPeriod = ym => DATA.transactions.filter(t=>t.card && periodOf(t.date)===ym);
+const cardMonthKey = t => (t.date||'').slice(0,7);
+const cardTxOfMonth = ym => DATA.transactions.filter(t=>t.card && cardMonthKey(t)===ym);
+const cardDataMonths = () => [...new Set(DATA.transactions.filter(t=>t.card).map(cardMonthKey).filter(Boolean))].sort();
+const cardLatestMonth = () => { const ms=cardDataMonths(); return ms.length?ms[ms.length-1]:todayISO().slice(0,7); };
 function cardSummary(ym){
-  const all=cardTxOfPeriod(ym); const active=all.filter(t=>!t.excluded);
+  const all=cardTxOfMonth(ym); const active=all.filter(t=>!t.excluded);
   const byCat={}; CARD_CATS.forEach(c=>byCat[c]={sum:0,n:0});
   active.forEach(t=>{ const c=CARD_CATS.includes(t.cat)?t.cat:'Altro'; byCat[c].sum+=(+t.amount||0); byCat[c].n++; });
   const rows=CARD_CATS.map(c=>({cat:c,sum:Math.round(byCat[c].sum*100)/100,n:byCat[c].n})).filter(r=>r.n>0).sort((a,b)=>b.sum-a.sum);
@@ -628,13 +632,13 @@ async function toggleCardExcluded(txId){
   if(cardCatSheet) openCardCat(cardCatSheet.cat, cardCatSheet.ym);
 }
 function deleteCardImport(ym){
-  const list=cardTxOfPeriod(ym); if(!list.length) return;
+  const list=cardTxOfMonth(ym); if(!list.length) return;
   if(!confirm(`Eliminare i ${list.length} movimenti carta importati per ${monthName(ym)}? Le spese personali del previsionale non vengono toccate.`)) return;
   Promise.all(list.map(t=>store.remove('transactions', t.id).catch(()=>{}))).then(()=>{ toast('Import rimosso'); softRender(); });
 }
 function openCardCat(cat, ym){
   cardCatSheet={ cat, ym };
-  const list=cardTxOfPeriod(ym).filter(t=>(CARD_CATS.includes(t.cat)?t.cat:'Altro')===cat)
+  const list=cardTxOfMonth(ym).filter(t=>(CARD_CATS.includes(t.cat)?t.cat:'Altro')===cat)
     .sort((a,b)=>(b.date<a.date?-1:b.date>a.date?1:0));
   const opts=t=>CARD_CATS.map(c=>`<option value="${c}"${(CARD_CATS.includes(t.cat)?t.cat:'Altro')===c?' selected':''}>${c}</option>`).join('');
   const rowH=t=>{ const ex=!!t.excluded;
@@ -656,6 +660,42 @@ function openCardCat(cat, ym){
     <p style="margin:0 0 4px;color:var(--muted,#8a8275);font-size:.78rem">Cambia categoria per riclassificare (l'app impara il commerciante per i prossimi import). \u201CEscludi\u201D toglie una spesa dal consuntivo \u2014 utile per acquisti B&B o costi gi\u00E0 nel previsionale.</p>
     ${list.length?list.map(rowH).join(''):'<p class="hint">Nessun movimento in questa categoria.</p>'}
   </div>`);
+}
+
+/* ===================== Vista: Carta (consuntivo mensile 1–31) ===================== */
+function viewCarta(){
+  if(!cardMonth) cardMonth = cardLatestMonth();
+  const cs = cardSummary(cardMonth);
+  const hasAny = cardDataMonths().length>0;
+  const importBtn = `<button data-act="card-import" style="display:flex;align-items:center;justify-content:center;gap:8px;width:100%;padding:12px;border-radius:12px;background:var(--acqua,#3E6B63);color:#fff;font-weight:600;font-family:inherit;font-size:.95rem;cursor:pointer;border:0">${svg('download')}<span>Importa estratto Nexi (.xlsx)</span></button>`;
+  if(!hasAny){
+    return `<section class="card">
+      <div class="card-h"><h3 class="card-title">Spese con carta</h3></div>
+      ${importBtn}
+      <p class="hint" style="margin-top:10px">Scarica da Nexi l'estratto movimenti in Excel e importalo qui. Vedrai quanto hai speso <b>davvero</b> con la carta, per categoria, mese per mese (1\u201331). Le due carte sullo stesso plafond si sommano: importa un file, poi tocca di nuovo per aggiungere l'altro.</p>
+    </section>`;
+  }
+  const nav = `<div class="monthnav"><button class="iconbtn" data-act="cardmonth" data-dir="-1" aria-label="Mese precedente">${svg('chevL')}</button><span class="m">${monthName(cardMonth)}</span><button class="iconbtn" data-act="cardmonth" data-dir="1" aria-label="Mese successivo">${svg('chevR')}</button></div>`;
+  const catRow=r=>`<button data-act="cardcat-open" data-cat="${escapeHtml(r.cat)}" data-ym="${cardMonth}" style="display:flex;justify-content:space-between;align-items:center;width:100%;gap:10px;padding:11px 0;border:0;border-top:1px solid var(--line,#e3dccc);background:transparent;font:inherit;cursor:pointer;text-align:left">
+      <span style="color:var(--ink,#2a2a2a)">${escapeHtml(r.cat)} <span style="color:var(--muted,#8a8275);font-size:.8rem">\u00B7 ${r.n}</span></span>
+      <b style="font-variant-numeric:tabular-nums">${eur(r.sum)}</b></button>`;
+  const body = cs.allN
+    ? `<div style="display:flex;justify-content:space-between;align-items:baseline;margin:2px 0 4px">
+         <span style="color:var(--muted,#8a8275)">Speso con carta</span>
+         <b style="font-family:var(--serif,Georgia,serif);font-size:1.6rem;font-variant-numeric:tabular-nums">${eur(cs.total)}</b></div>
+       ${cs.rows.map(catRow).join('')}
+       <p class="hint" style="margin-top:10px">Mese solare 1\u201331 \u00B7 solo carta (il contante non \u00E8 incluso). Tocca una categoria per correggere o escludere voci.${cs.excN?` <b>${cs.excN}</b> escluse (${eur(cs.excSum)}).`:''}</p>
+       <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">
+         <button data-act="card-import" style="border:0;background:transparent;color:var(--acqua,#3E6B63);font:inherit;font-size:.85rem;font-weight:600;cursor:pointer;padding:0">Aggiungi / aggiorna carta</button>
+         <button data-act="card-del" data-ym="${cardMonth}" style="border:0;background:transparent;color:var(--terra,#A6533F);font:inherit;font-size:.85rem;cursor:pointer">Rimuovi mese</button>
+       </div>`
+    : `${importBtn}<p class="hint" style="margin-top:10px">Nessun movimento carta in ${monthName(cardMonth)}. Importa l'estratto oppure cambia mese.</p>`;
+  return `${nav}
+  <section class="card">
+    <div class="card-h"><h3 class="card-title">Spese con carta</h3><span class="muted sm">1\u201331</span></div>
+    ${body}
+  </section>
+  <p class="hint" style="text-align:center;margin-top:2px">L'addebito in conto \u00E8 unico (il 15): qui vedi <b>dove</b> sono andati i soldi, non quando escono dal conto.</p>`;
 }
 
 /* ===================== Vista: Cruscotto ===================== */
@@ -714,31 +754,6 @@ function viewCruscotto(){
     <p class="hint" style="margin-top:0">Il mese scorso sono entrati ${eur(Lv.inc)}. Per tenere ogni mese sul livello di ${eur(Lv.level)}:</p>
     ${L(pos?'Metti in riserva':'Preleva dalla riserva', eur(Math.abs(Lv.move)), {big:true, cls:pos?'pos':'neg'})}
   </section>`; })()}
-  ${(()=>{ const cs=cardSummary(fMonth);
-    const btn=`<button data-act="card-import" style="display:flex;align-items:center;justify-content:center;gap:8px;width:100%;padding:12px;border-radius:12px;background:var(--acqua,#3E6B63);color:#fff;font-weight:600;font-family:inherit;font-size:.95rem;cursor:pointer;border:0">${svg('download')}<span>Importa estratto Nexi (.xlsx)</span></button>`;
-    if(!cs.allN){ return `<section class="card">
-      <div class="card-h"><h3 class="card-title">Consuntivo carta</h3><span class="muted sm">${monthName(fMonth)}</span></div>
-      ${btn}
-      <p class="hint" style="margin-top:10px">Scarica da Nexi l'estratto movimenti in Excel e importalo: vedrai quanto hai speso <b>davvero</b> con la carta, diviso per categoria, da confrontare col preventivo.</p>
-    </section>`; }
-    const catRow=r=>`<button data-act="cardcat-open" data-cat="${escapeHtml(r.cat)}" data-ym="${fMonth}" style="display:flex;justify-content:space-between;align-items:center;width:100%;gap:10px;padding:9px 0;border:0;border-top:1px solid var(--line,#e3dccc);background:transparent;font:inherit;cursor:pointer;text-align:left">
-        <span style="color:var(--ink,#2a2a2a)">${escapeHtml(r.cat)} <span style="color:var(--muted,#8a8275);font-size:.8rem">\u00B7 ${r.n}</span></span>
-        <b style="font-variant-numeric:tabular-nums">${eur(r.sum)}</b></button>`;
-    const cmp = hasReal ? (()=>{ const diff=Math.round((spendable-cs.total)*100)/100;
-      return diff>=0 ? L('Rimasto sul \u201Cda spendere\u201D', eur(diff), {big:true, cls:'pos'})
-                     : L('Oltre il \u201Cda spendere\u201D', eur(-diff), {big:true, cls:'neg'}); })() : '';
-    return `<section class="card">
-      <div class="card-h"><h3 class="card-title">Consuntivo carta</h3><span class="muted sm">${monthName(fMonth)}</span></div>
-      ${cs.rows.map(catRow).join('')}
-      ${L('Speso con carta', eur(cs.total), {border:true, bold:true})}
-      ${hasReal?L('Da spendere (preventivo)', eur(spendable)):''}
-      ${cmp}
-      <p class="hint" style="margin-top:8px">Solo spese con carta (il contante non \u00E8 incluso). Tocca una categoria per correggere o escludere voci.${cs.excN?` <b>${cs.excN}</b> escluse (${eur(cs.excSum)}).`:''}</p>
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">
-        <button data-act="card-import" style="border:0;background:transparent;color:var(--acqua,#3E6B63);font:inherit;font-size:.82rem;font-weight:600;cursor:pointer;padding:0">Aggiorna import</button>
-        <button data-act="card-del" data-ym="${fMonth}" style="border:0;background:transparent;color:var(--terra,#A6533F);font:inherit;font-size:.82rem;cursor:pointer">Rimuovi import</button>
-      </div>
-    </section>`; })()}
   <button class="card liq-card" data-act="goto" data-view="patrimonio">
     <span><span class="nudge-k">Liquidità disponibile</span><span class="muted sm">${np.vinc?` · ${eur(np.vinc)} vincolata`:''}</span></span>
     <span class="liq-v">${eur(np.dispo)}</span>
@@ -2415,6 +2430,7 @@ function onClick(e){
     case 'cardtx-excl': toggleCardExcluded(ds.id); break;
     case 'card-del': deleteCardImport(ds.ym); break;
     case 'card-import': openCardImport(); break;
+    case 'cardmonth': cardMonth = shiftMonth(cardMonth||cardLatestMonth(), +ds.dir||0); render(); break;
     case 'install': doInstall(); break;
     case 'cat-add': catAdd(ds.group); break;
     case 'cat-del': catDel(ds.group, ds.name); break;
