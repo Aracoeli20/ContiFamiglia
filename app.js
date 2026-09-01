@@ -579,7 +579,8 @@ function ensureXLSX(){
 }
 async function importNexiFiles(fileList){
   const files=[...(fileList||[])]; if(!files.length) return;
-  let XLSX; try{ XLSX=await ensureXLSX(); }catch(e){ toast('Serve connessione per il primo import'); return; }
+  toast(`Leggo ${files.length>1?files.length+' file':files[0].name}\u2026`);
+  let XLSX; try{ XLSX=await ensureXLSX(); }catch(e){ toast('Non riesco a caricare il lettore Excel: serve internet al primo import'); return; }
   const existing=new Set(DATA.transactions.filter(t=>t.card).map(cardDedupKey));
   const seen=new Set(); let added=0, dup=0, parsed=0;
   for(const f of files){
@@ -714,7 +715,7 @@ function viewCruscotto(){
     ${L(pos?'Metti in riserva':'Preleva dalla riserva', eur(Math.abs(Lv.move)), {big:true, cls:pos?'pos':'neg'})}
   </section>`; })()}
   ${(()=>{ const cs=cardSummary(fMonth);
-    const btn=`<label style="display:flex;align-items:center;justify-content:center;gap:8px;width:100%;padding:12px;border-radius:12px;background:var(--acqua,#3E6B63);color:#fff;font-weight:600;font-family:inherit;font-size:.95rem;cursor:pointer;border:0">${svg('download')}<span>Importa estratto Nexi (.xlsx)</span><input type="file" accept=".xlsx,.xls" multiple data-act="card-file" style="display:none"></label>`;
+    const btn=`<button data-act="card-import" style="display:flex;align-items:center;justify-content:center;gap:8px;width:100%;padding:12px;border-radius:12px;background:var(--acqua,#3E6B63);color:#fff;font-weight:600;font-family:inherit;font-size:.95rem;cursor:pointer;border:0">${svg('download')}<span>Importa estratto Nexi (.xlsx)</span></button>`;
     if(!cs.allN){ return `<section class="card">
       <div class="card-h"><h3 class="card-title">Consuntivo carta</h3><span class="muted sm">${monthName(fMonth)}</span></div>
       ${btn}
@@ -734,7 +735,7 @@ function viewCruscotto(){
       ${cmp}
       <p class="hint" style="margin-top:8px">Solo spese con carta (il contante non \u00E8 incluso). Tocca una categoria per correggere o escludere voci.${cs.excN?` <b>${cs.excN}</b> escluse (${eur(cs.excSum)}).`:''}</p>
       <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">
-        <label style="color:var(--acqua,#3E6B63);font-size:.82rem;font-weight:600;cursor:pointer">Aggiorna import<input type="file" accept=".xlsx,.xls" multiple data-act="card-file" style="display:none"></label>
+        <button data-act="card-import" style="border:0;background:transparent;color:var(--acqua,#3E6B63);font:inherit;font-size:.82rem;font-weight:600;cursor:pointer;padding:0">Aggiorna import</button>
         <button data-act="card-del" data-ym="${fMonth}" style="border:0;background:transparent;color:var(--terra,#A6533F);font:inherit;font-size:.82rem;cursor:pointer">Rimuovi import</button>
       </div>
     </section>`; })()}
@@ -2182,6 +2183,19 @@ function openImport(){
   }
   inp.value=''; inp.click();
 }
+function openCardImport(){
+  let inp=el('card-file-input');
+  if(!inp){
+    inp=document.createElement('input'); inp.type='file'; inp.accept='.xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'; inp.multiple=true; inp.id='card-file-input'; inp.style.display='none';
+    document.body.appendChild(inp); inp.addEventListener('change', handleCardFile);
+  }
+  inp.value=''; inp.click();
+}
+function handleCardFile(e){
+  const files=[...(e.target.files||[])]; // snapshot PRIMA di qualunque reset del campo
+  if(!files.length) return;
+  importNexiFiles(files);
+}
 async function handleImportFile(e){
   const file=e.target.files&&e.target.files[0]; if(!file) return;
   let data;
@@ -2400,6 +2414,7 @@ function onClick(e){
     case 'cardcat-open': openCardCat(ds.cat, ds.ym); break;
     case 'cardtx-excl': toggleCardExcluded(ds.id); break;
     case 'card-del': deleteCardImport(ds.ym); break;
+    case 'card-import': openCardImport(); break;
     case 'install': doInstall(); break;
     case 'cat-add': catAdd(ds.group); break;
     case 'cat-del': catDel(ds.group, ds.name); break;
@@ -2457,6 +2472,5 @@ function onChange(e){
     if(store.saveConfig) store.saveConfig('budget', BUDGET);
     render();
   }
-  else if(act==='card-file'){ const files=e.target.files; e.target.value=''; importNexiFiles(files); }
   else if(act==='cardcat-set'){ setCardCat(t.dataset.id, e.target.value); }
 }
