@@ -160,7 +160,7 @@ const svg = (k,cls='ic') => `<svg viewBox="0 0 24 24" class="${cls}" fill="none"
 /* ===================== Stato ===================== */
 let store=null, me=null, deferredPrompt=null;
 const DATA = { transactions:[], assets:[], snapshots:[], members:[], accounts:[], forecast:[], goals:[], categories:DEFAULT_CATEGORIES };
-let BUDGET = { needs:50, wants:30, save:20, startDate:'', cycleDay:1, level:0, realSal:{} };
+let BUDGET = { needs:50, wants:30, save:20, startDate:'', cycleDay:1, level:0, realSal:{}, taxAccount:'' };
 let budgetSource='preventivo';
 const NEEDS_MACROS = ['incomprimibili','oggettive'];
 let catSeeded=false, accountsSeeded=false, fcSeeded=false, budgetSeeded=false;
@@ -208,7 +208,7 @@ function ensureData(){
   });
   subs.gl = store.subscribe('goals', a=>{ DATA.goals=[...a].sort((x,y)=>(x.order||0)-(y.order||0)); softRender(); });
   subs.bd = store.subscribeConfig ? store.subscribeConfig('budget', o=>{
-    if(o && isFinite(+o.needs)){ BUDGET={ needs:+o.needs, wants:+o.wants, save:+o.save, startDate:o.startDate||'', cycleDay:+o.cycleDay||1, level:+o.level||0, realSal:(o.realSal&&typeof o.realSal==='object')?o.realSal:{} }; }
+    if(o && isFinite(+o.needs)){ BUDGET={ needs:+o.needs, wants:+o.wants, save:+o.save, startDate:o.startDate||'', cycleDay:+o.cycleDay||1, level:+o.level||0, realSal:(o.realSal&&typeof o.realSal==='object')?o.realSal:{}, taxAccount:o.taxAccount||'' }; }
     else if(!budgetSeeded){ budgetSeeded=true; store.saveConfig && store.saveConfig('budget', BUDGET); }
     softRender();
   }) : null;
@@ -502,7 +502,7 @@ function shell(content){
   </div>`;
 }
 const tab = (k,label,icon) => `<button class="tab${view===k?' active':''}" data-act="goto" data-view="${k}" role="tab" aria-selected="${view===k}">${svg(icon)}<span>${label}</span></button>`;
-const viewHtml = () => ({ previsionale:viewPrevisionale, carta:viewCarta, patrimonio:viewPatrimonio, impostazioni:viewImpostazioni }[view] || viewCruscotto)();
+const viewHtml = () => ({ previsionale:viewPrevisionale, carta:viewCarta, taxfund:viewTaxFund, patrimonio:viewPatrimonio, impostazioni:viewImpostazioni }[view] || viewCruscotto)();
 const monthNav = () => `<div class="monthnav"><button class="iconbtn" data-act="month" data-dir="-1" aria-label="Mese precedente">${svg('chevL')}</button><span class="m">${monthName(fMonth)}${cycleDay()>1?`<span class="m-range">${periodLabel(fMonth)}</span>`:''}</span><button class="iconbtn" data-act="month" data-dir="1" aria-label="Mese successivo">${svg('chevR')}</button></div>`;
 const yearNav = () => `<div class="monthnav"><button class="iconbtn" data-act="year" data-dir="-1" aria-label="Anno precedente">${svg('chevL')}</button><span class="m">${fYear}</span><button class="iconbtn" data-act="year" data-dir="1" aria-label="Anno successivo">${svg('chevR')}</button></div>`;
 const emptyState = msg => `<div class="empty">${escapeHtml(msg)}</div>`;
@@ -696,6 +696,62 @@ function viewCarta(){
     ${body}
   </section>
   <p class="hint" style="text-align:center;margin-top:2px">L'addebito in conto \u00E8 unico (il 15): qui vedi <b>dove</b> sono andati i soldi, non quando escono dal conto.</p>`;
+}
+
+/* ===================== Vista: Fondo tasse (accantonamento costi sporadici) ===================== */
+const taxFundItems = () => DATA.forecast.filter(it=>it.spread && it.flow!=='entrata' && (it.kind||'ricorrente')==='ricorrente');
+function taxFundAnnual(y){ let s=0; taxFundItems().forEach(it=>{ for(let m=0;m<12;m++) s+=fcMonthly(it,y,m); }); return Math.round(s*100)/100; }
+function taxFundMonthly(y){ let s=0; taxFundItems().forEach(it=>{ s+=fcMonthlyPlan(it,y,0); }); return Math.round(s*100)/100; }
+function taxFundSchedule(y){ const out=[]; taxFundItems().forEach(it=>{ for(let m=0;m<12;m++){ const v=fcMonthly(it,y,m); if(v>0.005) out.push({ name:it.name, m, amount:Math.round(v*100)/100 }); } }); return out.sort((a,b)=>a.m-b.m); }
+function taxFundNext(y, fromMi){ const s=taxFundSchedule(y).filter(x=>x.m>=fromMi); return s.length?s[0]:null; }
+function taxFundRemaining(y, fromMi){ return Math.round(sum(taxFundSchedule(y).filter(x=>x.m>=fromMi).map(x=>x.amount))*100)/100; }
+function viewTaxFund(){
+  const y=curYear(); const nowMi=new Date().getMonth();
+  const items=taxFundItems();
+  const back=`<button data-act="goto" data-view="previsionale" style="border:0;background:transparent;color:var(--muted,#8a8275);font:inherit;font-size:.9rem;cursor:pointer;padding:6px 0;display:flex;align-items:center;gap:2px">${svg('chevL','ic-xs')} Previsionale</button>`;
+  if(!items.length){
+    return `${back}
+    <section class="card">
+      <div class="card-h"><h3 class="card-title">Fondo tasse</h3></div>
+      <p class="hint" style="margin-top:0">Nessuna voce marcata come <b>Conto Tasse</b>. Nel Previsionale apri una spesa grossa e sporadica (IMU, TARI, bolli, canone\u2026) e attiva \u201CAccantona nel Conto Tasse\u201D: comparir\u00E0 qui col totale annuo e la quota mensile da mettere via.</p>
+    </section>`;
+  }
+  const annual=taxFundAnnual(y), monthly=taxFundMonthly(y), sched=taxFundSchedule(y);
+  const potId=BUDGET.taxAccount||''; const potAcc=potId?accountById(potId):null;
+  const bal=computeBalances(); const pot=potAcc?Math.round((bal[potId]||0)*100)/100:null;
+  const acctOpts=`<option value="">\u2014 nessuno \u2014</option>`+DATA.accounts.filter(a=>a.kind!=='carta').map(a=>`<option value="${a.id}"${a.id===potId?' selected':''}>${escapeHtml(a.name)}</option>`).join('');
+  const next=taxFundNext(y, nowMi), remaining=taxFundRemaining(y, nowMi);
+  const L=(k,v,o={})=>`<div style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:${o.big?'11px 0 0':'7px 0'};${o.border?'border-top:1px solid var(--line,#e3dccc);':''}${o.big?'border-top:2px solid var(--line,#e3dccc);':''}"><span style="${o.big?'font-family:var(--serif,Georgia,serif);font-size:1.05rem;':''}color:var(--ink,#2a2a2a)">${k}</span><b style="font-variant-numeric:tabular-nums;${o.big?'font-family:var(--serif,Georgia,serif);font-size:1.3rem;':''}${o.cls==='pos'?'color:var(--verde,#3E6B63);':''}${o.cls==='neg'?'color:var(--terra,#A6533F);':''}">${v}</b></div>`;
+  const schRow=x=>`<div style="display:flex;justify-content:space-between;padding:6px 0;border-top:1px solid var(--line,#e3dccc);${x.m<nowMi?'opacity:.45':''}">
+    <span style="color:var(--ink,#2a2a2a)">${escapeHtml(x.name)} <span style="color:var(--muted,#8a8275);font-size:.8rem">\u00B7 ${MESI_AB[x.m].toLowerCase()}</span></span>
+    <b style="font-variant-numeric:tabular-nums">${eur(x.amount)}</b></div>`;
+  let cov='';
+  if(potAcc){
+    if(next){ const diff=Math.round((pot-next.amount)*100)/100;
+      cov = `<p class="hint" style="margin-top:8px">Prossima: <b>${escapeHtml(next.name)}</b> a ${MESI_AB[next.m].toLowerCase()} (${eur(next.amount)}). Nel salvadanaio hai ${eur(pot)} \u2192 ${diff>=0?`<b style="color:var(--verde,#3E6B63)">coperta</b>`:`<b style="color:var(--terra,#A6533F)">mancano ${eur(-diff)}</b>`}.</p>`;
+    }
+    const diffR=Math.round((pot-remaining)*100)/100;
+    cov += `<p class="hint" style="margin-top:4px">Da qui a fine anno restano ${eur(remaining)} di scadenze. ${diffR>=0?`Il salvadanaio le copre gi\u00E0 tutte (avanzo ${eur(diffR)}).`:`Con la quota di ${eur(monthly)}/mese ci arrivi: oggi mancano ${eur(-diffR)}, li accumuli nei mesi che restano.`}</p>`;
+  } else {
+    cov = `<p class="hint" style="margin-top:8px">Scegli il conto salvadanaio per vedere saldo e copertura.</p>`;
+  }
+  return `${back}
+  <section class="card">
+    <div class="card-h"><h3 class="card-title">Fondo tasse</h3><span class="muted sm">${y}</span></div>
+    ${L('Da accantonare quest\u2019anno', eur(annual), {bold:true})}
+    ${L('Quota mensile (bonifico ricorrente)', eur(monthly), {big:true, cls:'pos'})}
+    <p class="hint" style="margin-top:6px">Un bonifico ricorrente di ${eur(monthly)} verso il salvadanaio: a fine anno avrai messo via ${eur(annual)}, cio\u00E8 esattamente le scadenze qui sotto.</p>
+  </section>
+  <section class="card">
+    <div class="card-h"><h3 class="card-title">Salvadanaio</h3></div>
+    <label class="field"><span>Conto salvadanaio tasse</span><select data-act="taxacct-set">${acctOpts}</select></label>
+    ${potAcc?L('Saldo attuale', eur(pot), {big:true}):''}
+    ${cov}
+  </section>
+  <section class="card">
+    <div class="card-h"><h3 class="card-title">Scadenzario ${y}</h3><span class="muted sm">${eur(annual)}</span></div>
+    ${sched.map(schRow).join('')}
+  </section>`;
 }
 
 /* ===================== Vista: Cruscotto ===================== */
@@ -927,6 +983,11 @@ function viewPrevisionale(){
     ${table}
     <p class="hint">Tocca una voce per modificarla. Le rate scorrono da sole oltre fine anno; gli accantonamenti si ripartiscono fino alla scadenza.</p>
   </section>
+  ${(()=>{ const n=taxFundItems().length; const a=taxFundAnnual(fYear), m=taxFundMonthly(fYear);
+    return `<button class="card" data-act="goto" data-view="taxfund" style="display:block;width:100%;text-align:left;border:0;cursor:pointer">
+      <div class="card-h"><h3 class="card-title">${svg('scale','ic-xs')} Fondo tasse</h3><span class="muted sm">apri \u203A</span></div>
+      <p class="hint" style="margin:0">${n?`<b>${eur(a)}</b>/anno \u00B7 metti via <b>${eur(m)}</b>/mese nel salvadanaio (IMU, TARI, bolli\u2026).`:'Marca le spese grosse e sporadiche (IMU, TARI, bolli) come Conto Tasse per calcolare quanto accantonare.'}</p>
+    </button>`; })()}
   <section class="card">
     <div class="card-h"><h3 class="card-title">Porta nel rendiconto</h3></div>
     <p class="hint" style="margin-top:0">Crea nel registro le voci fisse del mese scelto (una sola volta): uscite, entrate previste e accantonamenti (giroconti sul conto dedicato).</p>
@@ -2243,7 +2304,7 @@ async function importData(data){
     }
   }
   if(data.categories && store.saveCategories) await store.saveCategories(data.categories);
-  if(data.budget && store.saveConfig){ const b={ needs:+data.budget.needs||50, wants:+data.budget.wants||30, save:+data.budget.save||20, startDate:data.budget.startDate||'', cycleDay:+data.budget.cycleDay||1, level:+data.budget.level||0, realSal:(data.budget.realSal&&typeof data.budget.realSal==='object')?data.budget.realSal:{} }; BUDGET=b; await store.saveConfig('budget', b); }
+  if(data.budget && store.saveConfig){ const b={ needs:+data.budget.needs||50, wants:+data.budget.wants||30, save:+data.budget.save||20, startDate:data.budget.startDate||'', cycleDay:+data.budget.cycleDay||1, level:+data.budget.level||0, realSal:(data.budget.realSal&&typeof data.budget.realSal==='object')?data.budget.realSal:{}, taxAccount:data.budget.taxAccount||'' }; BUDGET=b; await store.saveConfig('budget', b); }
   return counts;
 }
 function buildBackup(){
@@ -2489,4 +2550,9 @@ function onChange(e){
     render();
   }
   else if(act==='cardcat-set'){ setCardCat(t.dataset.id, e.target.value); }
+  else if(act==='taxacct-set'){
+    BUDGET={ ...BUDGET, taxAccount:e.target.value||'' };
+    if(store.saveConfig) store.saveConfig('budget', BUDGET);
+    render();
+  }
 }
