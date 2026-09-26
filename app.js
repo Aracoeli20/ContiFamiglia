@@ -754,17 +754,52 @@ function viewTaxFund(){
   </section>`;
 }
 
+/* ===================== Preventivo del mese (calcolo) ===================== */
+// Conti che fanno da salvadanaio tasse: quello scelto nel Fondo tasse + ogni conto con "tass" nel nome
+function taxPotIds(){ const s=new Set(); if(BUDGET.taxAccount) s.add(BUDGET.taxAccount); DATA.accounts.forEach(a=>{ if(a.kind!=='carta' && /tass/i.test(a.name||'')) s.add(a.id); }); return s; }
+// Voce che in realtà è il versamento al salvadanaio tasse (es. "Bonifico Conto Tasse", "Fondo tasse")
+const looksLikeTaxTransfer = it => { const s=String(it.name||''); return /(conto|fondo|salvadanaio|accantonament[oi]|bonifico|giroconto|versamento)\W+(\w+\W+)?tass/i.test(s) || /tass\w*\W+(\w+\W+)?(bonifico|giroconto|versamento|accantonament[oi]|fondo|salvadanaio)/i.test(s); };
+function homePlan(ym){
+  const r2=n=>Math.round((+n||0)*100)/100;
+  const y=+ym.slice(0,4), mi=+ym.slice(5,7)-1;
+  const pot=taxPotIds();
+  const exp=DATA.forecast.filter(it=>it.flow!=='entrata');
+  // 1) Quota Conto Tasse = voci marcate "Conto Tasse", spalmate sull'anno
+  const taxIt=[]; exp.forEach(it=>{ if(!it.spread) return; const q=fcMonthlyPlan(it,y,mi); if(q>0) taxIt.push({it,q}); });
+  const tasseTotal=r2(sum(taxIt.map(x=>x.q)));
+  const tg={}; taxIt.forEach(({it,q})=>{ const k=String(it.group||'').trim()||it.name||'—'; tg[k]=(tg[k]||0)+q; });
+  const tasseItems=Object.entries(tg).map(([name,q])=>({name,q:r2(q)})).sort((a,b)=>b.q-a.q);
+  // 2) Obiettivi di risparmio (un obiettivo sul salvadanaio tasse sarebbe un doppione della quota tasse)
+  const dup=[]; const goals=[]; const countedGoalAcc=new Set();
+  DATA.goals.forEach(g=>{ const m=r2((+g.monthly>0)?+g.monthly:(goalStats(g).quotaFromDue||0)); if(m<=0) return;
+    const nm=(accountById(g.account)||{}).name||g.name||'Obiettivo';
+    if(tasseTotal>0 && g.account && pot.has(g.account)){ dup.push({name:g.name||nm, q:m, why:'obiettivo sul Conto Tasse'}); return; }
+    goals.push({name:nm, q:m}); if(g.account) countedGoalAcc.add(g.account); });
+  // 3) Spese fisse = tutte le altre uscite previste del mese (tasse escluse)
+  const fixed=[];
+  exp.forEach(it=>{ if(it.spread) return; const v=r2(fcMonthlyPlan(it,y,mi)); if(v<=0) return;
+    const k=it.kind||'ricorrente';
+    if(k==='accantonamento'){
+      if(tasseTotal>0 && it.fundAccount && pot.has(it.fundAccount)){ dup.push({name:it.name, q:v, why:'accantonamento sul Conto Tasse'}); return; }
+      if(it.fundAccount && countedGoalAcc.has(it.fundAccount)){ dup.push({name:it.name, q:v, why:'stesso conto di un obiettivo'}); return; }
+      goals.push({name:it.name, q:v}); return; // accantonamento = risparmio, non spesa
+    }
+    if(tasseTotal>0 && looksLikeTaxTransfer(it)){ dup.push({name:it.name, q:v, why:'versamento al Conto Tasse'}); return; }
+    fixed.push({it, v});
+  });
+  const cnt={}; fixed.forEach(({it})=>{ const n=String(it.name||'').trim().toLowerCase(); cnt[n]=(cnt[n]||0)+1; });
+  const fixedItems=fixed.map(({it,v})=>{ const n=String(it.name||'').trim(); const g=String(it.group||'').trim();
+    return { name:(cnt[n.toLowerCase()]>1 && g) ? `${g} ${n}` : (n||g||'—'), q:v }; }).sort((a,b)=>b.q-a.q);
+  const fixedExp=r2(sum(fixed.map(x=>x.v)));
+  const goalsTotal=r2(sum(goals.map(g=>g.q)));
+  return { tasseTotal, tasseItems, fixedExp, fixedItems, goals, goalsTotal, dup, totalOut:r2(fixedExp+tasseTotal) };
+}
+
 /* ===================== Vista: Cruscotto ===================== */
 function viewCruscotto(){
   const np = netWorthParts();
   const y=+fMonth.slice(0,4), mi=+fMonth.slice(5,7)-1;
-  const tmap={}; DATA.forecast.forEach(it=>{ if(it.spread && it.flow!=='entrata'){ const q=fcMonthlyPlan(it,y,mi); if(q>0) tmap[it.name]=(tmap[it.name]||0)+q; } });
-  const tasseItems=Object.entries(tmap).map(([name,q])=>({name,q:Math.round(q*100)/100})).sort((a,b)=>b.q-a.q);
-  const tasseTotal=Math.round(sum(tasseItems.map(x=>x.q))*100)/100;
-  const goals=DATA.goals.map(g=>{ const m=(+g.monthly>0)?+g.monthly:(goalStats(g).quotaFromDue||0); return { name:(accountById(g.account)||{}).name||g.name, m:Math.round(m*100)/100 }; }).filter(g=>g.m>0);
-  const goalsTotal=Math.round(sum(goals.map(g=>g.m))*100)/100;
-  const plan=plannedBudgetMonth(fMonth);
-  const fixedExp=Math.round((plan.needs + plan.wants - tasseTotal)*100)/100;
+  const { tasseTotal, tasseItems, fixedExp, fixedItems, goals, goalsTotal, dup, totalOut } = homePlan(fMonth);
   const incVals=DATA.forecast.filter(it=>it.flow==='entrata').map(it=>fcMonthlyPlan(it,y,mi)).filter(v=>v>0);
   const salaryV=incVals.length?Math.max(...incVals):0;
   const otherInc=Math.round((sum(incVals)-salaryV)*100)/100;
@@ -792,11 +827,14 @@ function viewCruscotto(){
     ${otherInc>0?L('Altre entrate previste', eur(otherInc)):''}
     ${L('Entrate totali', eur(totalInc), {border:true,bold:true})}
     ${sep}
-    ${L('− Spese fisse', eur(fixedExp))}
-    ${L('− Conto Tasse', eur(tasseTotal))}
+    ${L('− Spese fisse (tasse escluse)', eur(fixedExp))}
+    ${brk(fixedItems)}
+    ${L('− Quota Conto Tasse', eur(tasseTotal))}
     ${brk(tasseItems)}
+    ${tasseTotal>0?`<div style="font-size:.75rem;color:var(--muted,#8a8275);padding:0 0 6px 2px">Spese fisse + quota tasse = <b>${eur(totalOut)}</b>: tutte le uscite previste del mese, ognuna contata una sola volta.</div>`:''}
     ${L('− Accantonamento risparmi', eur(goalsTotal))}
     ${brk(goals)}
+    ${dup.length?`<div style="font-size:.75rem;color:var(--terra,#A6533F);padding:2px 0 6px 2px">Non sommate perché già contate: ${dup.map(d=>`${escapeHtml(d.name)} ${eur(d.q)} (${d.why})`).join(' · ')}.</div>`:''}
     ${L('Da spendere questo mese', eur(spendable), {big:true, cls:spendable>=0?'pos':'neg'})}
     ${!hasReal
       ? `<p class="hint" style="margin-top:8px">Sto usando lo stipendio <b>previsto</b> (${eur(salaryV)}). Inserisci quello <b>reale</b> ricevuto per il calcolo esatto del mese.</p>`
